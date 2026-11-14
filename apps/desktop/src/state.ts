@@ -43,7 +43,7 @@ export interface CompanionUiStore {
   readonly proactiveRules: Signal<readonly ProactiveRule[]>;
   readonly modelSettings: Signal<ModelSettingsSummary>;
   readonly statusBanner: Signal<string>;
-  connect(): void;
+  connect(options?: { readonly waitForBoot?: boolean }): void;
   disconnect(): void;
   sendChat(text: string): Promise<boolean>;
   decideApproval(approvalId: ApprovalId, decision: "approved" | "denied"): Promise<void>;
@@ -92,6 +92,7 @@ export function createCompanionUiStore(options?: {
     ...(authToken().trim() ? { authToken: authToken().trim() } : {}),
   });
   let closeEvents: (() => void) | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let connectSeq = 0;
 
   async function runAction(action: () => Promise<void>): Promise<boolean> {
@@ -192,16 +193,27 @@ export function createCompanionUiStore(options?: {
 
   function disconnect(): void {
     connectSeq += 1;
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    }
     closeEvents?.();
     closeEvents = undefined;
     connected.set(false);
   }
 
-  function syncSnapshot(seq: number): void {
+  let hasSyncedOnce = false;
+
+  function syncSnapshot(seq: number, retriesRemaining = 0): void {
+    if (retryTimer !== undefined) {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    }
     void transport
       .fetchState(conversationId)
       .then((snap) => {
         if (seq !== connectSeq) return;
+        hasSyncedOnce = true;
         messages.set(snap.messages);
         memories.set(snap.memories);
         relationship.set(snap.relationship);
@@ -215,19 +227,30 @@ export function createCompanionUiStore(options?: {
       })
       .catch((err) => {
         if (seq !== connectSeq) return;
+        if (retriesRemaining > 0) {
+          statusBanner.set("正在唤醒 Livia 后台服务…");
+          retryTimer = setTimeout(() => {
+            retryTimer = undefined;
+            if (seq === connectSeq) {
+              syncSnapshot(seq, retriesRemaining - 1);
+            }
+          }, 250);
+          return;
+        }
         statusBanner.set(`无法连接后端: ${err instanceof Error ? err.message : String(err)}`);
       });
   }
 
-  function connect(): void {
+  function connect(options?: { readonly waitForBoot?: boolean }): void {
     disconnect();
+    hasSyncedOnce = false;
     const seq = ++connectSeq;
     transport = makeTransport({
       baseUrl: baseUrl(),
       ...(authToken().trim() ? { authToken: authToken().trim() } : {}),
     });
 
-    syncSnapshot(seq);
+    syncSnapshot(seq, options?.waitForBoot ? 24 : 0);
 
     let hasConnectedOnce = false;
     closeEvents = transport.connectEvents(applyEvent, (isUp) => {
@@ -235,8 +258,8 @@ export function createCompanionUiStore(options?: {
       const wasUp = connected();
       connected.set(isUp);
       if (isUp) {
-        if (hasConnectedOnce && !wasUp) {
-          syncSnapshot(seq);
+        if (!hasSyncedOnce || (hasConnectedOnce && !wasUp)) {
+          syncSnapshot(seq, 0);
         }
         hasConnectedOnce = true;
       }

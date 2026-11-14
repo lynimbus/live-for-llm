@@ -1,5 +1,5 @@
 import type { ChatMessage, TaskRecord } from "@live-for-llm/protocol";
-import { DaemonDefaults, SessionMetrics, StatusPill } from "companiondesktop/native";
+import { DaemonDefaults, DaemonSidecar, SessionMetrics, StatusPill } from "companiondesktop/native";
 import { cleanup, effect, host, mount, Scroll, signal, Text, View } from "nsh";
 import { Button, Input } from "nsh/base";
 import { Window } from "nsh/desktop";
@@ -130,11 +130,15 @@ export function App(props: AppProps = {}) {
     }
   });
 
-  store.connect();
+  const sidecar = props.store ? undefined : new DaemonSidecar();
+  const sidecarState = sidecar ? sidecar.ensureLocal(store.baseUrl()) : "mock-store";
+  store.connect({ waitForBoot: sidecarState === "started" });
 
   cleanup(() => {
     store.disconnect();
     metrics.dispose();
+    sidecar?.stop();
+    sidecar?.dispose();
   });
 
   async function submitMessage(overrideText?: string) {

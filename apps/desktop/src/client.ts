@@ -106,13 +106,16 @@ export function createDaemonTransport(params: {
       let closed = false;
       let socket: WebSocket | undefined;
       let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+      let retryAttempt = 0;
 
       const scheduleReconnect = () => {
         if (closed || reconnectTimer !== undefined) return;
+        const delayMs = retryAttempt === 0 ? 250 : 2000;
+        retryAttempt += 1;
         reconnectTimer = setTimeout(() => {
           reconnectTimer = undefined;
           openSocket();
-        }, 2000);
+        }, delayMs);
       };
 
       const openSocket = () => {
@@ -124,7 +127,10 @@ export function createDaemonTransport(params: {
           scheduleReconnect();
           return;
         }
-        socket.onopen = () => onStatus(true);
+        socket.onopen = () => {
+          retryAttempt = 0;
+          onStatus(true);
+        };
         socket.onclose = () => {
           onStatus(false);
           scheduleReconnect();

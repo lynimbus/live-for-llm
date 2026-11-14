@@ -52,20 +52,21 @@ export OPENAI_API_KEY="sk-..."
 # export LIVE_FOR_LLM_DATA_DIR="$HOME/.local/share/live-for-llm"
 ```
 
-### 3. Start the daemon and desktop app
+### 3. Start the app (single command)
 
-Inside `nix develop`, run the daemon in one terminal:
+Inside `nix develop`, launch Livia with one command — the desktop shell automatically starts and supervises a local daemon sidecar if `http://127.0.0.1:4777` is not already running, and cleans it up on exit:
 
 ```bash
-pnpm --filter @live-for-llm/daemon start
-# or: just daemon
+just start
+# or: pnpm start
+# or: just desktop
 ```
 
-Run the `nsh` desktop app in a second terminal (inside `nix develop`):
+If you want to run the daemon standalone (e.g. headless background server for remote mobile connections via Tailscale), start it explicitly — the desktop app will detect the running daemon and reuse it without spawning a second copy:
 
 ```bash
-pnpm --filter @live-for-llm/desktop start
-# or: just desktop
+just daemon
+# or: pnpm --filter @live-for-llm/daemon start
 ```
 
 Export or re-import readable Markdown memory snapshots via CLI:
