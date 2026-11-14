@@ -5,3 +5,15 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local runtime & build artifacts
+node_modules/
+dist/
+target/
+.nsh/
+.nsh-home/
+.audit/
+decisions.tsv
+*.tsbuildinfo
+.env
+.env.*
