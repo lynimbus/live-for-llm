@@ -1,0 +1,14 @@
+{
+  "name": "@live-for-llm/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@live-for-llm/protocol": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "nsh check .",
+    "check": "nsh check .",
+    "test": "nsh test ."
+  }
+}

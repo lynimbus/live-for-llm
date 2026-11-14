@@ -1,0 +1,13 @@
+{
+  "extends": "./.nsh/tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "nsh": ["./.nsh/types/nsh/index.d.ts"],
+      "nsh/*": ["./.nsh/types/nsh/*.d.ts"],
+      "@live-for-llm/protocol": ["../../packages/protocol/src/index.ts"],
+      "*": ["./.nsh/types/*.d.ts"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"]
+}
