@@ -240,7 +240,10 @@ export function DrawerPanel(props: DrawerPanelProps) {
     <View
       testID="drawer-panel"
       class="bg-card border-l border-border"
-      style={[drawerMotion.style, { width: 432, padding: 14, gap: 12 }]}
+      style={[
+        drawerMotion.style,
+        { width: "42%", minWidth: 320, maxWidth: 420, padding: 14, gap: 12, overflow: "hidden" },
+      ]}
     >
       <View
         style={{
@@ -294,9 +297,15 @@ export function DrawerPanel(props: DrawerPanelProps) {
                       flexDirection: "row",
                       justifyContent: "space-between",
                       alignItems: "center",
+                      gap: 8,
                     }}
                   >
-                    <Text class="text-sm font-semibold text-foreground">{task().title}</Text>
+                    <Text
+                      class="text-sm font-semibold text-foreground"
+                      style={{ flex: 1, minWidth: 0 }}
+                    >
+                      {task().title}
+                    </Text>
                     <Text class="text-xs text-muted-foreground">
                       {DaemonDefaults.shortId(task().id)}
                     </Text>
@@ -490,9 +499,13 @@ export function DrawerPanel(props: DrawerPanelProps) {
                       flexDirection: "row",
                       justifyContent: "space-between",
                       alignItems: "center",
+                      gap: 8,
                     }}
                   >
-                    <Text class="text-sm font-medium text-foreground">
+                    <Text
+                      class="text-sm font-medium text-foreground"
+                      style={{ flex: 1, minWidth: 0 }}
+                    >
                       {`[${mem().kind}] ${mem().title}`}
                     </Text>
                     <Button
@@ -522,7 +535,15 @@ export function DrawerPanel(props: DrawerPanelProps) {
             class="p-3 rounded-xl border border-border bg-background"
             style={[CARD_ELEVATION_STYLE, { gap: 8 }]}
           >
-            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 8,
+              }}
+            >
               <Text class="text-sm font-semibold text-foreground">
                 {`${store.relationship().companionName} · 伙伴档案`}
               </Text>
@@ -550,6 +571,7 @@ export function DrawerPanel(props: DrawerPanelProps) {
                   personaName.set(e.value);
                 }}
                 class="flex-1 px-2.5 py-1.5 rounded-md border border-border bg-card text-xs text-foreground"
+                style={{ minWidth: 0 }}
               />
               <Input
                 testID="persona-user-input"
@@ -560,6 +582,7 @@ export function DrawerPanel(props: DrawerPanelProps) {
                   userName.set(e.value);
                 }}
                 class="flex-1 px-2.5 py-1.5 rounded-md border border-border bg-card text-xs text-foreground"
+                style={{ minWidth: 0 }}
               />
             </View>
             <Button
@@ -648,6 +671,7 @@ export function DrawerPanel(props: DrawerPanelProps) {
                   taskModel.set(e.value);
                 }}
                 class="flex-1 px-2.5 py-1.5 rounded-md border border-border bg-card text-xs text-foreground"
+                style={{ minWidth: 0 }}
               />
               <Input
                 testID="memory-model-input"
@@ -658,6 +682,7 @@ export function DrawerPanel(props: DrawerPanelProps) {
                   memoryModel.set(e.value);
                 }}
                 class="flex-1 px-2.5 py-1.5 rounded-md border border-border bg-card text-xs text-foreground"
+                style={{ minWidth: 0 }}
               />
             </View>
             <Button

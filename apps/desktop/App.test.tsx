@@ -202,3 +202,54 @@ test("renders companion chat, dispatches chat and approval commands, and drives 
     }),
   ).toBe(true);
 });
+
+test("renders empty welcome card in narrow split layout and submits starter prompt", async () => {
+  const emptySnapshot = {
+    ...makeSnapshot(),
+    messages: [],
+    tasks: [],
+  };
+  const postedCommands: Array<{ kind: string; content?: string }> = [];
+  const mockUrl = "http://mock-daemon.local:4777";
+
+  const app = await open("./App.tsx", {
+    platform: "linux",
+    width: 760,
+    height: 840,
+    host: {
+      params: {
+        daemonUrl: mockUrl,
+        drawerOpen: true,
+        activeTab: "tasks",
+      },
+    },
+    network: {
+      [`GET ${mockUrl}/api/state*`]: () => ({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(emptySnapshot),
+      }),
+      [`POST ${mockUrl}/api/command`]: (req) => {
+        const parsed = JSON.parse(req.body ?? "{}") as { kind: string; content?: string };
+        postedCommands.push(parsed);
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ok: true }),
+        };
+      },
+    },
+  });
+
+  await app.waitFor("id:welcome-card");
+  await app.waitFor("id:drawer-panel");
+  expect(app.texts()).toContain("Livia · live-for-llm 已就绪");
+  expect(app.texts()).toContain("记住我平时喜欢简洁直接的汇报方式。");
+
+  await app.press("text:记住我平时喜欢简洁直接的汇报方式。");
+  expect(
+    postedCommands.some(
+      (c) => c.kind === "chat.send" && c.content === "记住我平时喜欢简洁直接的汇报方式。",
+    ),
+  ).toBe(true);
+});

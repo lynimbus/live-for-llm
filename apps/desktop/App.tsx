@@ -302,7 +302,10 @@ export function App(props: AppProps = {}) {
               },
             ]}
           >
-            <Text class="text-xs font-semibold text-accent-foreground">
+            <Text
+              class="text-xs font-semibold text-accent-foreground"
+              style={{ flex: 1, minWidth: 0 }}
+            >
               {describeAttentionTask(task())}
             </Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
@@ -354,15 +357,19 @@ export function App(props: AppProps = {}) {
         )}
       </If>
 
-      <View style={{ flex: 1, flexDirection: "row" }}>
-        <View style={{ flex: 1 }}>
-          <Scroll style={{ flex: 1 }} contentStyle={{ padding: 18, gap: 12 }}>
+      <View style={{ flex: 1, flexDirection: "row", minWidth: 0 }}>
+        <View style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+          <Scroll style={{ flex: 1, minWidth: 0 }} contentStyle={{ padding: 18, gap: 12 }}>
             <If
               when={store.messages().length > 0}
               else={
                 <View
+                  testID="welcome-card"
                   class="p-5 rounded-2xl border border-border bg-card"
-                  style={[CARD_ELEVATION_STYLE, { gap: 10, maxWidth: 560 }]}
+                  style={[
+                    CARD_ELEVATION_STYLE,
+                    { gap: 10, width: "100%", maxWidth: 560, minWidth: 0, overflow: "hidden" },
+                  ]}
                 >
                   <Text class="text-base font-semibold text-foreground">
                     {`${store.relationship().companionName} · live-for-llm 已就绪`}
@@ -370,17 +377,31 @@ export function App(props: AppProps = {}) {
                   <Text class="text-xs text-muted-foreground" style={{ lineHeight: 18 }}>
                     直接对话倾诉、让我记住你的偏好，或者交给我后台浏览器与 Harness 任务。如果还没填 API Key，点右上角 Settings 即可自定义 Base URL 与密钥。
                   </Text>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+                  <View
+                    style={{
+                      flexDirection: "column",
+                      alignItems: "flex-start",
+                      gap: 6,
+                      marginTop: 4,
+                      width: "100%",
+                      minWidth: 0,
+                    }}
+                  >
                     <Each of={STARTER_PROMPTS}>
                       {(prompt) => (
                         <Button
                           onPress={() => void submitMessage(prompt())}
                           class="px-3 py-1.5 rounded-lg bg-secondary border border-border"
-                          style={BUTTON_MOTION_STYLE}
+                          style={[BUTTON_MOTION_STYLE, { maxWidth: "100%", minWidth: 0, flexShrink: 1 }]}
                           hoverStyle={{ opacity: 0.9 }}
                           activeStyle={BUTTON_ACTIVE_STYLE}
                         >
-                          <Text class="text-xs text-secondary-foreground">{prompt()}</Text>
+                          <Text
+                            class="text-xs text-secondary-foreground"
+                            style={{ flexShrink: 1, minWidth: 0, lineHeight: 17 }}
+                          >
+                            {prompt()}
+                          </Text>
                         </Button>
                       )}
                     </Each>
