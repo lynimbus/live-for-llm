@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
-import { createModelRouter, type TieredModelConfig } from "../src/index.ts";
+import { createModelRouter, fetchAvailableModels, type TieredModelConfig } from "../src/index.ts";
 
 async function withTestServer(
   handler: (req: http.IncomingMessage, body: string, res: http.ServerResponse) => void,
@@ -201,6 +201,57 @@ test("router surfaces HTTP errors cleanly", async () => {
           messages: [{ role: "user", content: "hi" }],
         }),
       /openai_compatible API error \(429\)/,
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test("fetchAvailableModels lists model ids across openai, anthropic, and gemini", async () => {
+  const srv = await withTestServer((req, _body, res) => {
+    if (req.url === "/v1/models" && req.headers.authorization === "Bearer oai-k") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "gpt-4o" }, { id: "deepseek-chat" }] }));
+      return;
+    }
+    if (req.url === "/ant/v1/models" && req.headers["x-api-key"] === "ant-k") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "claude-sonnet-4" }] }));
+      return;
+    }
+    if (req.url === "/gem/models?key=gem-k") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash" }] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  try {
+    assert.deepEqual(
+      await fetchAvailableModels({
+        provider: "openai_compatible",
+        baseUrl: `${srv.url}/v1`,
+        apiKey: "oai-k",
+      }),
+      ["deepseek-chat", "gpt-4o"],
+    );
+    assert.deepEqual(
+      await fetchAvailableModels({
+        provider: "anthropic",
+        baseUrl: `${srv.url}/ant`,
+        apiKey: "ant-k",
+      }),
+      ["claude-sonnet-4"],
+    );
+    assert.deepEqual(
+      await fetchAvailableModels({
+        provider: "gemini",
+        baseUrl: `${srv.url}/gem`,
+        apiKey: "gem-k",
+      }),
+      ["gemini-2.5-flash"],
     );
   } finally {
     await srv.close();

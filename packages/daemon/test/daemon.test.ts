@@ -123,6 +123,11 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
+      if (req.url === "/models" && req.method === "GET") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "custom-chat-v2" }, { id: "custom-task-v2" }] }));
+        return;
+      }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
         model?: string;
         messages: Array<{ role: string; content: string }>;
@@ -267,6 +272,38 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
         (r) => r.auth === "Bearer sk-custom-1234567890" && r.model === "custom-chat-v2",
       ),
     );
+
+    const fetchRes = await fetch(`${httpUrl}/api/models/fetch`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret-tailscale-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ provider: "openai_compatible", baseUrl: customUrl }),
+    });
+    assert.equal(fetchRes.status, 200);
+    const fetched = (await fetchRes.json()) as { models: string[] };
+    assert.deepEqual(fetched.models, ["custom-chat-v2", "custom-task-v2"]);
+
+    const chatMsgs = daemon.store.listChatMessages("conv_main" as never);
+    assert.ok(chatMsgs.length >= 2);
+    const firstMsgId = chatMsgs[0]!.id;
+    ws.send(
+      JSON.stringify({
+        kind: "chat.recall",
+        conversationId: "conv_main",
+        messageId: firstMsgId,
+      }),
+    );
+    const recallDeadline = Date.now() + 2000;
+    while (
+      Date.now() < recallDeadline &&
+      !received.some((e) => e.kind === "chat.updated")
+    ) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(daemon.store.listChatMessages("conv_main" as never)[0]?.recalled);
+
     ws.close();
   } finally {
     await daemon.stop();

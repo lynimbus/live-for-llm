@@ -16,13 +16,16 @@ import {
   parseMessageId,
   parseTaskId,
 } from "@live-for-llm/protocol";
-import { extractMemoriesFromTurn } from "./extractor.ts";
+import {
+  computeSilentRelationshipUpdate,
+  extractMemoriesFromTurn,
+} from "./extractor.ts";
 import { composeCompanionSystemPrompt } from "./prompt.ts";
 
 const DELEGATE_TASK_TOOL: ToolSpec = {
   name: "delegate_task",
   description:
-    "Delegate an actionable request (web search with user account, posting/sending messages, coding harness, or utility automation) to the background TaskRunner.",
+    "Delegate an actionable request to the background TaskRunner: local workspace files/shell utility, coding harness, web research in persistent Chromium, or posting/sending messages.",
   parameters: {
     type: "object",
     properties: {
@@ -110,7 +113,9 @@ export class CompanionRuntime {
           t.state.kind === "paused_for_user",
       );
 
-    const history = this.store.listChatMessages(params.conversationId, 20);
+    const history = this.store
+      .listChatMessages(params.conversationId, 20)
+      .filter((m) => !m.recalled && m.content.trim().length > 0);
     const messages: ChatTurnMessage[] = [
       {
         role: "system",
@@ -197,19 +202,33 @@ export class CompanionRuntime {
     this.store.appendChatMessage(reply);
     this.emit({ kind: "chat.message", message: reply });
 
+    let extracted: Awaited<ReturnType<typeof extractMemoriesFromTurn>> = [];
     try {
-      const newMemories = await extractMemoriesFromTurn({
+      extracted = await extractMemoriesFromTurn({
         router: this.router,
         store: this.store,
         userText: params.content,
         companionText: reply.content,
         enableEmbeddings: this.enableEmbeddings,
       });
-      if (newMemories.length > 0) {
-        this.emit({ kind: "memory.updated", records: newMemories });
+      if (extracted.length > 0) {
+        this.emit({ kind: "memory.updated", records: extracted });
       }
     } catch {
       // Non-fatal memory extraction failure must not interrupt conversation delivery.
+    }
+
+    try {
+      const nextRel = computeSilentRelationshipUpdate({
+        current: this.store.getRelationshipState(),
+        userText: params.content,
+        companionText: reply.content,
+        extracted,
+      });
+      const persisted = this.store.updateRelationshipState(nextRel);
+      this.emit({ kind: "relationship.updated", relationship: persisted });
+    } catch {
+      // Non-fatal silent relationship drift update.
     }
 
     return { reply, spawnedTaskIds };

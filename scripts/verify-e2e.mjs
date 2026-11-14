@@ -193,14 +193,16 @@ try {
         },
       },
     });
-    await liveApp.waitFor("text:Online • trust_auto");
+    await liveApp.waitFor("text:已连接");
     await liveApp.type("id:chat-input", "Please inspect the local page");
     await liveApp.press("id:send-btn");
     await liveApp.waitFor("text:Checking the live page for you!");
     await liveApp.waitFor("text:Inspect local target", { timeout: 15000 });
-    await liveApp.waitFor("text:browser_research • Completed: Verified title: Live Browser Target", { timeout: 15000 });
-    await liveApp.press("id:tab-memories");
-    await liveApp.waitFor("text:[episode] Requested live target check", { timeout: 5000 });
+    await liveApp.waitFor("text:browser_research • 已完成：Verified title: Live Browser Target", { timeout: 15000 });
+    await liveApp.press("id:toggle-settings");
+    await liveApp.waitFor("id:settings-page");
+    await liveApp.press("id:settings-tab-memories");
+    await liveApp.waitFor("text:[经历] Requested live target check", { timeout: 5000 });
   `;
 
   const result = await runNshStdin("apps/desktop/App.tsx", steps);

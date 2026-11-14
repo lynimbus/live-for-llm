@@ -67,16 +67,34 @@ test("MemoryStore persists relationship state and chat messages", () => {
     assert.equal(store.getRelationshipState().affinityScore, 0.82);
 
     const convId = parseConversationId("conv_main");
+    const msg1 = parseMessageId("msg_1");
+    const msg2 = parseMessageId("msg_2");
     store.appendChatMessage({
-      id: parseMessageId("msg_1"),
+      id: msg1,
       conversationId: convId,
       role: "user",
       content: "晚安",
       createdAt: "2026-11-15T05:30:00Z",
     });
+    store.appendChatMessage({
+      id: msg2,
+      conversationId: convId,
+      role: "companion",
+      content: "早点休息",
+      createdAt: "2026-11-15T05:31:00Z",
+    });
+    const recalled = store.recallChatMessage(convId, msg1);
+    assert.equal(recalled?.recalled, true);
+    assert.equal(recalled?.content, "");
+
     const history = store.listChatMessages(convId);
-    assert.equal(history.length, 1);
-    assert.equal(history[0]?.content, "晚安");
+    assert.equal(history.length, 2);
+    assert.equal(history[0]?.recalled, true);
+    assert.equal(history[1]?.content, "早点休息");
+
+    const deleted = store.deleteChatMessages(convId, [msg2]);
+    assert.equal(deleted, 1);
+    assert.equal(store.listChatMessages(convId).length, 1);
   } finally {
     store.close();
   }

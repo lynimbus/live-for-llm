@@ -5,6 +5,8 @@ import {
   type DaemonEvent,
   DEFAULT_POLICY_CONFIG,
   type MemoryRecord,
+  type ModelFetchRequest,
+  type ModelFetchResult,
   type ModelSettingsSummary,
   type PolicyConfig,
   type ProactiveRule,
@@ -27,6 +29,7 @@ export interface DaemonStateSnapshot {
 export interface DaemonTransport {
   fetchState(conversationId: ConversationId): Promise<DaemonStateSnapshot>;
   sendCommand(command: ClientCommand): Promise<void>;
+  fetchModels(req: ModelFetchRequest): Promise<ModelFetchResult>;
   exportMemories(): Promise<{ readonly files: readonly string[] }>;
   importMemories(): Promise<{ readonly imported: number }>;
   connectEvents(onEvent: (event: DaemonEvent) => void, onStatus: (connected: boolean) => void): () => void;
@@ -75,6 +78,26 @@ export function createDaemonTransport(params: {
         const body = await res.text();
         throw new Error(`Command failed (${res.status}): ${body}`);
       }
+    },
+
+    async fetchModels(req: ModelFetchRequest): Promise<ModelFetchResult> {
+      const res = await fetch(`${baseUrl}/api/models/fetch`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(req),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        let message = text;
+        try {
+          const parsed = JSON.parse(text) as { error?: string };
+          if (parsed.error) message = parsed.error;
+        } catch {
+          // Keep raw text fallback.
+        }
+        throw new Error(message || `Fetch models failed (${res.status})`);
+      }
+      return (await res.json()) as ModelFetchResult;
     },
 
     async exportMemories(): Promise<{ readonly files: readonly string[] }> {

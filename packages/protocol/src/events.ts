@@ -49,6 +49,19 @@ export interface ChatMessage {
   readonly createdAt: string;
   readonly proactive?: boolean;
   readonly linkedTaskId?: TaskId;
+  readonly recalled?: boolean;
+  readonly recalledAt?: string;
+  readonly recalledBy?: "user" | "companion";
+}
+
+export interface ModelFetchRequest {
+  readonly provider: LlmProviderKind;
+  readonly baseUrl: string;
+  readonly apiKey?: string;
+}
+
+export interface ModelFetchResult {
+  readonly models: readonly string[];
 }
 
 export const LLM_PROVIDER_KINDS = ["openai_compatible", "anthropic", "gemini"] as const;
@@ -104,6 +117,17 @@ export type ClientCommand =
       readonly deviceId?: DeviceId;
     }
   | {
+      readonly kind: "chat.recall";
+      readonly conversationId: ConversationId;
+      readonly messageId: MessageId;
+      readonly by?: "user" | "companion";
+    }
+  | {
+      readonly kind: "chat.delete";
+      readonly conversationId: ConversationId;
+      readonly messageIds: readonly MessageId[];
+    }
+  | {
       readonly kind: "approval.decide";
       readonly approvalId: ApprovalId;
       readonly decision: ApprovalDecision;
@@ -155,6 +179,11 @@ export type DaemonEvent =
   | {
       readonly kind: "chat.message";
       readonly message: ChatMessage;
+    }
+  | {
+      readonly kind: "chat.updated";
+      readonly conversationId: ConversationId;
+      readonly messages: readonly ChatMessage[];
     }
   | {
       readonly kind: "proactive.message";
@@ -209,6 +238,12 @@ function parseChatMessage(raw: unknown): ChatMessage {
   const proactive = obj["proactive"] === undefined ? undefined : expectBoolean(obj["proactive"], "ChatMessage.proactive");
   const linkedTaskId =
     obj["linkedTaskId"] === undefined ? undefined : parseTaskId(obj["linkedTaskId"]);
+  const recalled = obj["recalled"] === undefined ? undefined : expectBoolean(obj["recalled"], "ChatMessage.recalled");
+  const recalledAt = expectOptionalString(obj["recalledAt"], "ChatMessage.recalledAt");
+  const recalledBy =
+    obj["recalledBy"] === undefined
+      ? undefined
+      : expectEnum(obj["recalledBy"], ["user", "companion"], "ChatMessage.recalledBy");
   return {
     id: parseMessageId(obj["id"]),
     conversationId: parseConversationId(obj["conversationId"]),
@@ -217,6 +252,9 @@ function parseChatMessage(raw: unknown): ChatMessage {
     createdAt: expectString(obj["createdAt"], "ChatMessage.createdAt"),
     ...(proactive !== undefined ? { proactive } : {}),
     ...(linkedTaskId !== undefined ? { linkedTaskId } : {}),
+    ...(recalled !== undefined ? { recalled } : {}),
+    ...(recalledAt !== undefined ? { recalledAt } : {}),
+    ...(recalledBy !== undefined ? { recalledBy } : {}),
   };
 }
 
@@ -370,6 +408,29 @@ export function parseClientCommand(raw: unknown): ClientCommand {
         ...(deviceId !== undefined ? { deviceId } : {}),
       };
     }
+    case "chat.recall": {
+      const by =
+        obj["by"] === undefined
+          ? undefined
+          : expectEnum(obj["by"], ["user", "companion"], "chat.recall.by");
+      return {
+        kind: "chat.recall",
+        conversationId: parseConversationId(obj["conversationId"]),
+        messageId: parseMessageId(obj["messageId"]),
+        ...(by !== undefined ? { by } : {}),
+      };
+    }
+    case "chat.delete": {
+      const rawIds = obj["messageIds"];
+      if (!Array.isArray(rawIds)) {
+        throw new Error("Invalid chat.delete.messageIds: expected array");
+      }
+      return {
+        kind: "chat.delete",
+        conversationId: parseConversationId(obj["conversationId"]),
+        messageIds: rawIds.map((item) => parseMessageId(item)),
+      };
+    }
     case "approval.decide":
       return {
         kind: "approval.decide",
@@ -413,6 +474,16 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent {
       };
     case "chat.message":
       return { kind: "chat.message", message: parseChatMessage(obj["message"]) };
+    case "chat.updated": {
+      if (!Array.isArray(obj["messages"])) {
+        throw new Error("Invalid chat.updated.messages: expected array");
+      }
+      return {
+        kind: "chat.updated",
+        conversationId: parseConversationId(obj["conversationId"]),
+        messages: obj["messages"].map((item) => parseChatMessage(item)),
+      };
+    }
     case "proactive.message":
       return {
         kind: "proactive.message",

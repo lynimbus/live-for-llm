@@ -12,6 +12,8 @@ import {
 import {
   CompanionRuntime,
   ProactiveScheduler,
+  composeCompanionSystemPrompt,
+  createUtilityTools,
   isWithinQuietHours,
 } from "../src/index.ts";
 
@@ -143,7 +145,35 @@ test("CompanionRuntime chats, recalls memories, delegates background task, and e
 
     assert.ok(events.some((e) => e.kind === "task.updated" && e.task.state.kind === "completed"));
     assert.ok(events.some((e) => e.kind === "memory.updated"));
+    assert.ok(events.some((e) => e.kind === "relationship.updated"));
     assert.ok(store.listMemories().some((m) => m.title === "深夜写作习惯"));
+    assert.ok(store.getRelationshipState().affinityScore > 0.5);
+
+    const utilityTools = createUtilityTools({
+      workspaceRoot: process.cwd(),
+      getPolicy: () => store.getPolicy(),
+    });
+    const timeTool = utilityTools.find((tool) => tool.spec.name === "get_current_time");
+    assert.ok(timeTool);
+    const timeOut = await timeTool.execute({}, {
+      taskId: result.spawnedTaskIds[0]!,
+      conversationId: convId,
+      taskKind: "shell_utility",
+      goal: "time",
+      signal: new AbortController().signal,
+      reportProgress: () => {},
+      requestApproval: async () => "approved",
+      requestUserPause: async () => {},
+    });
+    assert.ok(JSON.parse(timeOut).iso);
+
+    const promptText = composeCompanionSystemPrompt({
+      relationship: store.getRelationshipState(),
+      memories: store.listMemories(),
+      activeTasks: [],
+    });
+    assert.equal(promptText.includes("affinity="), false);
+    assert.ok(promptText.includes("shell_utility"));
   } finally {
     store.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));

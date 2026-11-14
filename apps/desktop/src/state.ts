@@ -6,6 +6,8 @@ import {
   type MemoryDraft,
   type MemoryId,
   type MemoryRecord,
+  type MessageId,
+  type ModelFetchRequest,
   type ModelSettingsSummary,
   type ModelSettingsUpdate,
   type PolicyConfig,
@@ -24,15 +26,18 @@ import {
   EMPTY_SNAPSHOT,
   createDaemonTransport,
 } from "./client";
+import { t } from "./i18n.ts";
 
-export type DrawerTab = "tasks" | "memories" | "settings";
+export type AppPage = "chat" | "settings";
+export type SettingsSection = "models" | "memories" | "general";
 
 export interface CompanionUiStore {
   readonly baseUrl: Signal<string>;
   readonly authToken: Signal<string>;
   readonly connected: Signal<boolean>;
+  readonly activePage: Signal<AppPage>;
+  readonly settingsSection: Signal<SettingsSection>;
   readonly drawerOpen: Signal<boolean>;
-  readonly activeTab: Signal<DrawerTab>;
   readonly messages: Signal<readonly ChatMessage[]>;
   readonly streamingReply: Signal<string>;
   readonly memories: Signal<readonly MemoryRecord[]>;
@@ -42,16 +47,21 @@ export interface CompanionUiStore {
   readonly policy: Signal<PolicyConfig>;
   readonly proactiveRules: Signal<readonly ProactiveRule[]>;
   readonly modelSettings: Signal<ModelSettingsSummary>;
+  readonly fetchedModels: Signal<readonly string[]>;
+  readonly fetchingModels: Signal<boolean>;
   readonly statusBanner: Signal<string>;
   connect(options?: { readonly waitForBoot?: boolean }): void;
   disconnect(): void;
   sendChat(text: string): Promise<boolean>;
+  recallMessage(messageId: MessageId): Promise<boolean>;
+  deleteMessages(messageIds: readonly MessageId[]): Promise<boolean>;
   decideApproval(approvalId: ApprovalId, decision: "approved" | "denied"): Promise<void>;
   resumeBrowserTask(taskId: TaskId): Promise<void>;
   cancelTask(taskId: TaskId): Promise<void>;
   addMemory(draft: MemoryDraft): Promise<void>;
   deleteMemory(memoryId: MemoryId): Promise<void>;
   setPolicyMode(mode: TrustPolicyMode): Promise<void>;
+  fetchModels(req: ModelFetchRequest): Promise<readonly string[] | null>;
   updateModelSettings(settings: ModelSettingsUpdate): Promise<boolean>;
   updateRelationship(patch: RelationshipUpdate): Promise<boolean>;
   exportMarkdown(): Promise<void>;
@@ -73,8 +83,9 @@ export function createCompanionUiStore(options?: {
   const baseUrl = signal(options?.initialUrl ?? "http://127.0.0.1:4777");
   const authToken = signal("");
   const connected = signal(false);
+  const activePage = signal<AppPage>("chat");
+  const settingsSection = signal<SettingsSection>("models");
   const drawerOpen = signal(true);
-  const activeTab = signal<DrawerTab>("tasks");
   const messages = signal<readonly ChatMessage[]>(EMPTY_SNAPSHOT.messages);
   const streamingReply = signal("");
   const memories = signal<readonly MemoryRecord[]>(EMPTY_SNAPSHOT.memories);
@@ -84,6 +95,8 @@ export function createCompanionUiStore(options?: {
   const policy = signal<PolicyConfig>(EMPTY_SNAPSHOT.policy);
   const proactiveRules = signal<readonly ProactiveRule[]>(EMPTY_SNAPSHOT.proactiveRules);
   const modelSettings = signal<ModelSettingsSummary>(DEFAULT_MODEL_SETTINGS);
+  const fetchedModels = signal<readonly string[]>([]);
+  const fetchingModels = signal(false);
   const statusBanner = signal("");
 
   const makeTransport = options?.transportFactory ?? createDaemonTransport;
@@ -100,7 +113,9 @@ export function createCompanionUiStore(options?: {
       await action();
       return true;
     } catch (err) {
-      statusBanner.set(`操作失败: ${err instanceof Error ? err.message : String(err)}`);
+      statusBanner.set(
+        t("statusOpFailed", { err: err instanceof Error ? err.message : String(err) }),
+      );
       return false;
     }
   }
@@ -123,6 +138,11 @@ export function createCompanionUiStore(options?: {
         messages.update((prev) =>
           prev.some((m) => m.id === event.message.id) ? prev : [...prev, event.message],
         );
+        return;
+      case "chat.updated":
+        if (event.conversationId === conversationId) {
+          messages.set(event.messages);
+        }
         return;
       case "task.updated":
         tasks.update((prev) => {
@@ -155,7 +175,7 @@ export function createCompanionUiStore(options?: {
         }));
         return;
       case "approval.requested":
-        statusBanner.set(`需要确认: ${event.approval.actionSummary}`);
+        statusBanner.set(t("attentionApproval", { summary: event.approval.actionSummary }));
         return;
       case "memory.updated":
         if (event.replaced) {
@@ -182,7 +202,7 @@ export function createCompanionUiStore(options?: {
       case "pong":
         return;
       case "error":
-        statusBanner.set(`错误 (${event.code}): ${event.message}`);
+        statusBanner.set(`${event.code}: ${event.message}`);
         return;
       default: {
         const _exhaustive: never = event;
@@ -228,7 +248,7 @@ export function createCompanionUiStore(options?: {
       .catch((err) => {
         if (seq !== connectSeq) return;
         if (retriesRemaining > 0) {
-          statusBanner.set("正在唤醒 Livia 后台服务…");
+          statusBanner.set(t("statusWaking"));
           retryTimer = setTimeout(() => {
             retryTimer = undefined;
             if (seq === connectSeq) {
@@ -237,7 +257,9 @@ export function createCompanionUiStore(options?: {
           }, 250);
           return;
         }
-        statusBanner.set(`无法连接后端: ${err instanceof Error ? err.message : String(err)}`);
+        statusBanner.set(
+          t("statusUnreachable", { err: err instanceof Error ? err.message : String(err) }),
+        );
       });
   }
 
@@ -270,8 +292,9 @@ export function createCompanionUiStore(options?: {
     baseUrl,
     authToken,
     connected,
+    activePage,
+    settingsSection,
     drawerOpen,
-    activeTab,
     messages,
     streamingReply,
     memories,
@@ -281,6 +304,8 @@ export function createCompanionUiStore(options?: {
     policy,
     proactiveRules,
     modelSettings,
+    fetchedModels,
+    fetchingModels,
     statusBanner,
     connect,
     disconnect,
@@ -293,6 +318,35 @@ export function createCompanionUiStore(options?: {
           conversationId,
           content: trimmed,
         });
+      });
+    },
+    async recallMessage(messageId: MessageId): Promise<boolean> {
+      return runAction(async () => {
+        const target = messages().find((m) => m.id === messageId);
+        const by = target?.role === "companion" ? "companion" : "user";
+        await transport.sendCommand({
+          kind: "chat.recall",
+          conversationId,
+          messageId,
+          by,
+        });
+        messages.update((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, content: "", recalled: true, recalledBy: by } : m,
+          ),
+        );
+      });
+    },
+    async deleteMessages(messageIds: readonly MessageId[]): Promise<boolean> {
+      if (messageIds.length === 0) return true;
+      return runAction(async () => {
+        await transport.sendCommand({
+          kind: "chat.delete",
+          conversationId,
+          messageIds,
+        });
+        const removeSet = new Set(messageIds);
+        messages.update((prev) => prev.filter((m) => !removeSet.has(m.id)));
       });
     },
     async decideApproval(approvalId: ApprovalId, decision: "approved" | "denied") {
@@ -334,28 +388,48 @@ export function createCompanionUiStore(options?: {
         policy.set(next);
       });
     },
+    async fetchModels(req: ModelFetchRequest): Promise<readonly string[] | null> {
+      fetchingModels.set(true);
+      try {
+        const res = await transport.fetchModels(req);
+        fetchedModels.set(res.models);
+        statusBanner.set(
+          res.models.length > 0
+            ? t("statusModelsFetched", { count: res.models.length })
+            : t("statusModelsFetchEmpty"),
+        );
+        return res.models;
+      } catch (err) {
+        statusBanner.set(
+          t("statusOpFailed", { err: err instanceof Error ? err.message : String(err) }),
+        );
+        return null;
+      } finally {
+        fetchingModels.set(false);
+      }
+    },
     async updateModelSettings(settings: ModelSettingsUpdate): Promise<boolean> {
       return runAction(async () => {
         await transport.sendCommand({ kind: "models.update", settings });
-        statusBanner.set("API 与模型配置已保存并生效");
+        statusBanner.set(t("statusModelsSaved"));
       });
     },
     async updateRelationship(patch: RelationshipUpdate): Promise<boolean> {
       return runAction(async () => {
         await transport.sendCommand({ kind: "relationship.update", patch });
-        statusBanner.set("伙伴档案已更新");
+        statusBanner.set(t("statusPersonaSaved"));
       });
     },
     async exportMarkdown() {
       await runAction(async () => {
         const res = await transport.exportMemories();
-        statusBanner.set(`已导出 ${res.files.length} 个 Markdown 文件`);
+        statusBanner.set(t("statusExported", { count: res.files.length }));
       });
     },
     async importMarkdown() {
       await runAction(async () => {
         const res = await transport.importMemories();
-        statusBanner.set(`已同步 ${res.imported} 条 Markdown 修改`);
+        statusBanner.set(t("statusImported", { count: res.imported }));
         const snap = await transport.fetchState(conversationId);
         memories.set(snap.memories);
       });

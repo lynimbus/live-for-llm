@@ -33,7 +33,7 @@ const DEFAULT_RELATIONSHIP_STATE: RelationshipState = {
   companionName: "Livia",
   userName: "你",
   affinityScore: 0.5,
-  currentMood: "warm",
+  currentMood: "calm",
   insideJokes: [],
   anniversaries: [],
   updatedAt: new Date(0).toISOString(),
@@ -173,6 +173,9 @@ export class MemoryStore {
         content TEXT NOT NULL,
         proactive INTEGER NOT NULL DEFAULT 0,
         linked_task_id TEXT,
+        recalled INTEGER NOT NULL DEFAULT 0,
+        recalled_at TEXT,
+        recalled_by TEXT,
         created_at TEXT NOT NULL
       );
 
@@ -197,6 +200,20 @@ export class MemoryStore {
         policy_json TEXT NOT NULL
       );
     `);
+
+    const cols = this.db
+      .prepare("PRAGMA table_info(chat_messages)")
+      .all() as unknown as Array<{ name: string }>;
+    const existing = new Set(cols.map((c) => c.name));
+    if (!existing.has("recalled")) {
+      this.db.exec("ALTER TABLE chat_messages ADD COLUMN recalled INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!existing.has("recalled_at")) {
+      this.db.exec("ALTER TABLE chat_messages ADD COLUMN recalled_at TEXT;");
+    }
+    if (!existing.has("recalled_by")) {
+      this.db.exec("ALTER TABLE chat_messages ADD COLUMN recalled_by TEXT;");
+    }
   }
 
   close(): void {
@@ -382,8 +399,9 @@ export class MemoryStore {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO chat_messages (
-          id, conversation_id, role, content, proactive, linked_task_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          id, conversation_id, role, content, proactive, linked_task_id,
+          recalled, recalled_at, recalled_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         message.id,
@@ -392,8 +410,74 @@ export class MemoryStore {
         message.content,
         message.proactive ? 1 : 0,
         message.linkedTaskId ?? null,
+        message.recalled ? 1 : 0,
+        message.recalledAt ?? null,
+        message.recalledBy ?? null,
         message.createdAt,
       );
+  }
+
+  recallChatMessage(
+    conversationId: ConversationId,
+    messageId: ChatMessage["id"],
+    by?: "user" | "companion",
+  ): ChatMessage | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM chat_messages WHERE conversation_id = ? AND id = ?")
+      .get(conversationId, messageId) as unknown as
+      | {
+          id: string;
+          conversation_id: string;
+          role: "user" | "companion" | "system";
+          content: string;
+          proactive: number;
+          linked_task_id: string | null;
+          recalled: number;
+          recalled_at: string | null;
+          recalled_by: "user" | "companion" | null;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return undefined;
+
+    const recalledAt = new Date().toISOString();
+    const recalledBy = by ?? (row.role === "companion" ? "companion" : "user");
+    this.db
+      .prepare(
+        `UPDATE chat_messages
+         SET content = '', recalled = 1, recalled_at = ?, recalled_by = ?
+         WHERE conversation_id = ? AND id = ?`,
+      )
+      .run(recalledAt, recalledBy, conversationId, messageId);
+
+    return {
+      id: parseMessageId(row.id),
+      conversationId: parseConversationId(row.conversation_id),
+      role: row.role,
+      content: "",
+      createdAt: row.created_at,
+      ...(row.proactive === 1 ? { proactive: true } : {}),
+      ...(row.linked_task_id !== null ? { linkedTaskId: parseTaskId(row.linked_task_id) } : {}),
+      recalled: true,
+      recalledAt,
+      recalledBy,
+    };
+  }
+
+  deleteChatMessages(
+    conversationId: ConversationId,
+    messageIds: readonly ChatMessage["id"][],
+  ): number {
+    if (messageIds.length === 0) return 0;
+    const stmt = this.db.prepare(
+      "DELETE FROM chat_messages WHERE conversation_id = ? AND id = ?",
+    );
+    let deleted = 0;
+    for (const id of messageIds) {
+      const info = stmt.run(conversationId, id);
+      deleted += Number(info.changes ?? 0);
+    }
+    return deleted;
   }
 
   listChatMessages(conversationId: ConversationId, limit = 100): ChatMessage[] {
@@ -410,6 +494,9 @@ export class MemoryStore {
       content: string;
       proactive: number;
       linked_task_id: string | null;
+      recalled: number;
+      recalled_at: string | null;
+      recalled_by: "user" | "companion" | null;
       created_at: string;
     }[];
 
@@ -421,6 +508,9 @@ export class MemoryStore {
       createdAt: row.created_at,
       ...(row.proactive === 1 ? { proactive: true } : {}),
       ...(row.linked_task_id !== null ? { linkedTaskId: parseTaskId(row.linked_task_id) } : {}),
+      ...(row.recalled === 1 ? { recalled: true } : {}),
+      ...(row.recalled_at !== null ? { recalledAt: row.recalled_at } : {}),
+      ...(row.recalled_by !== null ? { recalledBy: row.recalled_by } : {}),
     }));
   }
 

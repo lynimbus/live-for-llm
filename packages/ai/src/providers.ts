@@ -699,3 +699,75 @@ export async function generateEmbeddings(params: {
 
   throw new Error(`Provider ${params.profile.provider} does not support embeddings`);
 }
+
+/** Queries the configured provider endpoint for available model identifiers (Magpie-style setup). */
+export async function fetchAvailableModels(params: {
+  readonly provider: ModelProfile["provider"];
+  readonly baseUrl: string;
+  readonly apiKey?: string;
+  readonly signal?: AbortSignal;
+  readonly fetchImpl?: FetchLike;
+}): Promise<string[]> {
+  const fetchFn = params.fetchImpl ?? fetch;
+  const baseUrl = stripTrailingSlash(params.baseUrl.trim());
+  const apiKey = params.apiKey?.trim();
+  if (!baseUrl) {
+    throw new Error("Base URL is required to fetch models");
+  }
+
+  let url: string;
+  const headers: Record<string, string> = {};
+
+  if (params.provider === "openai_compatible") {
+    url = `${baseUrl}/models`;
+    if (apiKey) headers["authorization"] = `Bearer ${apiKey}`;
+  } else if (params.provider === "anthropic") {
+    const root = baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
+    url = `${root}/models`;
+    headers["anthropic-version"] = "2023-06-01";
+    if (apiKey) headers["x-api-key"] = apiKey;
+  } else {
+    url = `${baseUrl}/models${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ""}`;
+  }
+
+  const res = await fetchFn(url, {
+    method: "GET",
+    headers,
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`${params.provider} /models error (${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  const parsed: unknown = JSON.parse(text);
+  const rawList = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === "object" && parsed !== null
+      ? ((parsed as Record<string, unknown>)["data"] ??
+        (parsed as Record<string, unknown>)["models"] ??
+        [])
+      : [];
+
+  if (!Array.isArray(rawList)) {
+    return [];
+  }
+
+  const ids = new Set<string>();
+  for (const item of rawList) {
+    if (typeof item === "string" && item.trim()) {
+      ids.add(item.trim());
+    } else if (typeof item === "object" && item !== null) {
+      const row = item as Record<string, unknown>;
+      const rawId =
+        typeof row["id"] === "string"
+          ? row["id"]
+          : typeof row["name"] === "string"
+            ? row["name"]
+            : "";
+      const cleaned = rawId.replace(/^models\//, "").trim();
+      if (cleaned) ids.add(cleaned);
+    }
+  }
+  return Array.from(ids).sort((a, b) => a.localeCompare(b));
+}

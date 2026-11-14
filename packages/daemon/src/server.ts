@@ -1,11 +1,17 @@
 import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { join } from "node:path";
-import { createModelRouter, type FetchLike, type ModelRouter } from "@live-for-llm/ai";
+import {
+  createModelRouter,
+  fetchAvailableModels,
+  type FetchLike,
+  type ModelRouter,
+} from "@live-for-llm/ai";
 import { PersistentBrowserManager } from "@live-for-llm/browser";
 import {
   CompanionRuntime,
   createBrowserTools,
+  createUtilityTools,
   ProactiveScheduler,
 } from "@live-for-llm/companion";
 import {
@@ -21,6 +27,8 @@ import {
 import {
   type ClientCommand,
   type DaemonEvent,
+  LLM_PROVIDER_KINDS,
+  type LlmProviderKind,
   parseBrowserProfileId,
   parseClientCommand,
   parseConversationId,
@@ -87,6 +95,7 @@ export class CompanionDaemon {
   readonly runtime: CompanionRuntime;
   readonly scheduler: ProactiveScheduler;
   private readonly router: ModelRouter;
+  private readonly fetchImpl: FetchLike | undefined;
   private readonly configPath: string | undefined;
   private readonly clients = new Set<WebSocket>();
   private readonly startedAt = Date.now();
@@ -96,6 +105,7 @@ export class CompanionDaemon {
 
   constructor(options: CompanionDaemonOptions) {
     this.config = options.config;
+    this.fetchImpl = options.fetchImpl;
     this.configPath = options.configPath;
     const dbPath =
       this.config.dataDir === ":memory:"
@@ -122,14 +132,20 @@ export class CompanionDaemon {
       profileId,
       getPolicy: () => this.store.getPolicy(),
     });
+    const utilityTools = createUtilityTools({
+      workspaceRoot: process.cwd(),
+      getPolicy: () => this.store.getPolicy(),
+    });
 
     const registry = new TaskRunnerRegistry()
       .register(
         new BuiltinAgentRunner({
           id: "builtin-agent",
-          label: "Built-in Browser & Task Agent",
+          label: "Built-in Browser & Workspace Agent",
           router,
-          tools: browserTools,
+          tools: [...browserTools, ...utilityTools],
+          systemPrompt:
+            "You are the background execution harness. You have both persistent browser automation tools (browser_*) and local workspace/utility tools (get_current_time, list_directory, read_local_file, write_local_file, run_shell_command). Use the right tools for the goal and return a concise factual summary.",
         }),
       )
       .register(
@@ -177,6 +193,24 @@ export class CompanionDaemon {
         await this.runtime.handleUserMessage({
           conversationId: cmd.conversationId,
           content: cmd.content,
+        });
+        return;
+      }
+      case "chat.recall": {
+        this.store.recallChatMessage(cmd.conversationId, cmd.messageId, cmd.by);
+        this.broadcastDirect({
+          kind: "chat.updated",
+          conversationId: cmd.conversationId,
+          messages: this.store.listChatMessages(cmd.conversationId, 100),
+        });
+        return;
+      }
+      case "chat.delete": {
+        this.store.deleteChatMessages(cmd.conversationId, cmd.messageIds);
+        this.broadcastDirect({
+          kind: "chat.updated",
+          conversationId: cmd.conversationId,
+          messages: this.store.listChatMessages(cmd.conversationId, 100),
         });
         return;
       }
@@ -322,6 +356,33 @@ export class CompanionDaemon {
             store: this.store,
           });
           writeJson(res, 200, { imported });
+          return;
+        }
+
+        if (url.pathname === "/api/models/fetch" && req.method === "POST") {
+          const raw = (await readJsonBody(req)) as Record<string, unknown>;
+          const rawProvider = raw["provider"];
+          const provider: LlmProviderKind =
+            typeof rawProvider === "string" &&
+            (LLM_PROVIDER_KINDS as readonly string[]).includes(rawProvider)
+              ? (rawProvider as LlmProviderKind)
+              : this.config.models.companion_chat.provider;
+          const baseUrl =
+            typeof raw["baseUrl"] === "string" && raw["baseUrl"].trim()
+              ? raw["baseUrl"].trim()
+              : this.config.models.companion_chat.baseUrl;
+          const rawKey = typeof raw["apiKey"] === "string" ? raw["apiKey"].trim() : "";
+          const savedProfile = this.config.models.companion_chat;
+          const envKey = savedProfile.apiKeyEnv ? process.env[savedProfile.apiKeyEnv] : undefined;
+          const apiKey = rawKey || savedProfile.apiKey || envKey;
+
+          const models = await fetchAvailableModels({
+            provider,
+            baseUrl,
+            ...(apiKey ? { apiKey } : {}),
+            ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+          });
+          writeJson(res, 200, { models });
           return;
         }
 
