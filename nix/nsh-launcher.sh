@@ -42,12 +42,15 @@ caps="$(cat "@runnerEnv@")"
 pc="$(printf '%s\n' "$caps" | sed -n 1p)"
 schemas="$(printf '%s\n' "$caps" | sed -n 2p)"
 gst="$(printf '%s\n' "$caps" | sed -n 3p)"
+libs="$(printf '%s\n' "$caps" | sed -n 4p)"
 if [ -n "${PKG_CONFIG_PATH:-}" ]; then pc="$pc:$PKG_CONFIG_PATH"; fi
 if [ -n "${XDG_DATA_DIRS:-}" ]; then schemas="$schemas:$XDG_DATA_DIRS"; fi
 if [ -n "${GST_PLUGIN_SYSTEM_PATH_1_0:-}" ]; then gst="$gst:$GST_PLUGIN_SYSTEM_PATH_1_0"; fi
+if [ -n "${LIBRARY_PATH:-}" ]; then libs="$libs:$LIBRARY_PATH"; fi
 export PKG_CONFIG_PATH="$pc"
 export XDG_DATA_DIRS="$schemas"
 export GST_PLUGIN_SYSTEM_PATH_1_0="$gst"
+export LIBRARY_PATH="$libs"
 export LIBCLANG_PATH="@libclang@"
 
 # The runner build calls cargo, and QuickJS's C code needs a compiler. A

@@ -57,10 +57,23 @@ let
         ];
       }
       ''
+        lib_dirs=""
+        for tok in $NIX_LDFLAGS $(pkg-config --libs-only-L gtk4 webkitgtk-6.0 pangoft2 pangocairo fontconfig freetype2 glib-2.0 gdk-pixbuf-2.0 gstreamer-1.0 gstreamer-audio-1.0 gstreamer-app-1.0 2>/dev/null || true); do
+          case "$tok" in
+            -L/*)
+              dir="''${tok#-L}"
+              case ":$lib_dirs:" in
+                *":$dir:"*) ;;
+                *) lib_dirs="''${lib_dirs:+$lib_dirs:}$dir" ;;
+              esac
+              ;;
+          esac
+        done
         printf '%s\n' \
           "$PKG_CONFIG_PATH" \
           "$GSETTINGS_SCHEMAS_PATH" \
           "$GST_PLUGIN_SYSTEM_PATH_1_0" \
+          "$lib_dirs" \
           > $out
       '';
 
