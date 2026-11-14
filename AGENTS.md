@@ -47,6 +47,12 @@ cp -rf source dest          # NOT: cp -r source dest
 - `apt-get` - use `-y` flag
 - `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
+## Version Control & Auto-Commit (Overrides Beads Conservative Profile)
+
+- **Pure Jujutsu (`jj`)**: This repository is managed with `jj` (`.jj/`). Never run `git init` or `git commit`/`git push`; use `jj` commands instead.
+- **Auto-Commit on Task Completion**: After finishing a change and verifying relevant checks/tests (`just check`, `just test`, etc.) pass, automatically commit locally with `jj commit -m "<conventional-message>"` and move the `main` bookmark (`jj bookmark set main -r @-`) without asking for extra confirmation.
+- **Push Policy**: Keep remote pushes (`jj git push`) explicit unless the user asks to push.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
 
