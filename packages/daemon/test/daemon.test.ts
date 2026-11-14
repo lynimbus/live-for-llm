@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,6 +109,164 @@ test("CompanionDaemon enforces Bearer auth, serves /api/state, and streams WS ch
       ),
     );
 
+    ws.close();
+  } finally {
+    await daemon.stop();
+    rmSync(dataDir, { recursive: true, force: true });
+    await new Promise<void>((resolve) => llmServer.close(() => resolve()));
+  }
+});
+
+test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship names", async () => {
+  const seenRequests: Array<{ auth?: string; model?: string }> = [];
+  const llmServer = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+        model?: string;
+        messages: Array<{ role: string; content: string }>;
+        stream?: boolean;
+      };
+      const sys = body.messages.find((m) => m.role === "system")?.content ?? "";
+      if (sys.includes("Extract durable personal memories")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { content: "[]" } }] }));
+        return;
+      }
+      seenRequests.push({
+        ...(req.headers.authorization ? { auth: req.headers.authorization } : {}),
+        ...(body.model ? { model: body.model } : {}),
+      });
+      if (body.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write('data: {"choices":[{"delta":{"content":"已切换新端点。"}}]}\n\n');
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "已切换新端点。" } }] }));
+    });
+  });
+
+  await new Promise<void>((resolve) => llmServer.listen(0, "127.0.0.1", resolve));
+  const llmAddr = llmServer.address();
+  assert.ok(llmAddr && typeof llmAddr !== "string");
+  const customUrl = `http://127.0.0.1:${llmAddr.port}`;
+
+  const dataDir = mkdtempSync(join(tmpdir(), "lfl-daemon-cfg-"));
+  const configPath = join(dataDir, "config.json");
+  const baseCfg = createDefaultDaemonConfig({
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-tailscale-token",
+    dataDir,
+  });
+
+  const daemon = new CompanionDaemon({ config: baseCfg, configPath });
+  const addr = await daemon.start();
+  const httpUrl = `http://${addr.host}:${addr.port}`;
+
+  try {
+    const received: DaemonEvent[] = [];
+    const ws = new WebSocket(
+      `ws://${addr.host}:${addr.port}/ws?token=secret-tailscale-token`,
+    );
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    ws.on("message", (raw) => {
+      received.push(parseDaemonEvent(JSON.parse(raw.toString("utf8"))));
+    });
+
+    ws.send(
+      JSON.stringify({
+        kind: "models.update",
+        settings: {
+          provider: "openai_compatible",
+          baseUrl: customUrl,
+          apiKey: "sk-custom-1234567890",
+          companionModel: "custom-chat-v2",
+          taskModel: "custom-task-v2",
+        },
+      }),
+    );
+    ws.send(
+      JSON.stringify({
+        kind: "relationship.update",
+        patch: {
+          companionName: "Livia-2",
+          userName: "Lynimbus",
+        },
+      }),
+    );
+
+    const cfgDeadline = Date.now() + 3000;
+    while (
+      Date.now() < cfgDeadline &&
+      (!received.some((e) => e.kind === "models.updated") ||
+        !received.some((e) => e.kind === "relationship.updated"))
+    ) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const modelsEvt = received.find((e) => e.kind === "models.updated");
+    assert.ok(modelsEvt && modelsEvt.kind === "models.updated");
+    assert.equal(modelsEvt.settings.baseUrl, customUrl);
+    assert.equal(modelsEvt.settings.companionModel, "custom-chat-v2");
+    assert.equal(modelsEvt.settings.taskModel, "custom-task-v2");
+    assert.equal(modelsEvt.settings.hasApiKey, true);
+    assert.equal(modelsEvt.settings.apiKeyMasked, "sk-••••7890");
+
+    const relEvt = received.find((e) => e.kind === "relationship.updated");
+    assert.ok(relEvt && relEvt.kind === "relationship.updated");
+    assert.equal(relEvt.relationship.companionName, "Livia-2");
+    assert.equal(relEvt.relationship.userName, "Lynimbus");
+
+    assert.equal(existsSync(configPath), true);
+    const saved = JSON.parse(readFileSync(configPath, "utf8")) as {
+      models: { companion_chat: { baseUrl: string; apiKey: string; model: string } };
+    };
+    assert.equal(saved.models.companion_chat.baseUrl, customUrl);
+    assert.equal(saved.models.companion_chat.apiKey, "sk-custom-1234567890");
+    assert.equal(saved.models.companion_chat.model, "custom-chat-v2");
+
+    const stateRes = await fetch(`${httpUrl}/api/state?conversationId=conv_main`, {
+      headers: { authorization: "Bearer secret-tailscale-token" },
+    });
+    assert.equal(stateRes.status, 200);
+    const state = (await stateRes.json()) as {
+      relationship: { companionName: string; userName?: string };
+      modelSettings: { baseUrl: string; apiKeyMasked?: string; companionModel: string };
+    };
+    assert.equal(state.relationship.companionName, "Livia-2");
+    assert.equal(state.relationship.userName, "Lynimbus");
+    assert.equal(state.modelSettings.baseUrl, customUrl);
+    assert.equal(state.modelSettings.apiKeyMasked, "sk-••••7890");
+
+    ws.send(
+      JSON.stringify({
+        kind: "chat.send",
+        conversationId: "conv_main",
+        content: "测试自定义接口",
+      }),
+    );
+
+    const chatDeadline = Date.now() + 3000;
+    while (
+      Date.now() < chatDeadline &&
+      !received.some((e) => e.kind === "chat.message" && e.message.role === "companion")
+    ) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    assert.ok(
+      seenRequests.some(
+        (r) => r.auth === "Bearer sk-custom-1234567890" && r.model === "custom-chat-v2",
+      ),
+    );
     ws.close();
   } finally {
     await daemon.stop();

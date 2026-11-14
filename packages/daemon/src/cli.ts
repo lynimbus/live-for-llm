@@ -1,11 +1,12 @@
 import { exportMemoriesToMarkdown, importMarkdownEdits, MemoryStore } from "@live-for-llm/memory";
 import { join } from "node:path";
-import { loadDaemonConfig } from "./config.ts";
+import { loadDaemonConfig, resolveDaemonConfigPath } from "./config.ts";
 import { CompanionDaemon } from "./server.ts";
 
 async function main(): Promise<void> {
   const command = process.argv[2] ?? "start";
-  const config = loadDaemonConfig();
+  const configPath = resolveDaemonConfigPath();
+  const config = loadDaemonConfig(configPath);
 
   if (command === "export-memories") {
     const store = new MemoryStore(join(config.dataDir, "companion.db"));
@@ -29,7 +30,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const daemon = new CompanionDaemon({ config });
+  const daemon = new CompanionDaemon({ config, configPath });
   const addr = await daemon.start();
   process.stdout.write(`live-for-llm daemon listening on http://${addr.host}:${addr.port}\n`);
 

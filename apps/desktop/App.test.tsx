@@ -39,7 +39,7 @@ function makeSnapshot() {
       },
     ],
     relationship: {
-      companionName: "Alma",
+      companionName: "Livia",
       userName: "Lyn",
       affinityScore: 0.72,
       currentMood: "warm",
@@ -70,6 +70,16 @@ function makeSnapshot() {
       mode: "trust_auto",
       autoApproveDomains: [],
       alwaysConfirmTiers: ["destructive"],
+    },
+    modelSettings: {
+      provider: "openai_compatible",
+      baseUrl: "https://api.openai.com/v1",
+      companionModel: "gpt-4o-mini",
+      taskModel: "gpt-4o",
+      memoryModel: "gpt-4o-mini",
+      visionModel: "gpt-4o",
+      embeddingModel: "text-embedding-3-small",
+      hasApiKey: false,
     },
     proactiveRules: [
       {
@@ -126,13 +136,13 @@ test("renders companion chat, dispatches chat and approval commands, and drives 
   });
 
   await app.waitFor("text:Welcome back, Lyn. Everything is synced.");
-  expect(app.texts()).toContain("Alma");
+  expect(app.texts()).toContain("Livia");
   expect(app.texts()).toContain("Approval needed: Submit public post on example.com");
 
-  await app.type("id:chat-input", "Good morning Alma");
+  await app.type("id:chat-input", "Good morning Livia");
   await app.press("id:send-btn");
   expect(app.texts()).toContain("turns 1");
-  expect(postedCommands.some((c) => c.kind === "chat.send" && c.content === "Good morning Alma")).toBe(true);
+  expect(postedCommands.some((c) => c.kind === "chat.send" && c.content === "Good morning Livia")).toBe(true);
 
   await app.press("id:banner-approve-btn");
   expect(
@@ -164,6 +174,25 @@ test("renders companion chat, dispatches chat and approval commands, and drives 
   await app.press("id:tab-settings");
   await app.waitFor("text:Trust & Safety Mode");
   expect(app.texts()).toContain("Affinity 72/100 • Mood: warm");
+
+  await app.clear("id:api-base-url-input");
+  await app.type("id:api-base-url-input", "https://api.custom-llm.example/v1");
+  await app.type("id:api-key-input", "sk-custom-test-key");
+  await app.clear("id:chat-model-input");
+  await app.type("id:chat-model-input", "deepseek-chat");
+  await app.press("id:save-models-btn");
+  expect(
+    postedCommands.some((c) => {
+      if (c.kind !== "models.update") return false;
+      const settings = c.settings as { baseUrl?: string; apiKey?: string; companionModel?: string } | undefined;
+      return (
+        settings?.baseUrl === "https://api.custom-llm.example/v1" &&
+        settings?.apiKey === "sk-custom-test-key" &&
+        settings?.companionModel === "deepseek-chat"
+      );
+    }),
+  ).toBe(true);
+
   await app.press("id:policy-confirm_external");
   expect(
     postedCommands.some((c) => {

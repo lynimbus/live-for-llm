@@ -71,6 +71,7 @@ export interface GenerateOptions {
 
 export interface ModelRouter {
   getProfile(role: ModelRole): ModelProfile;
+  updateConfig(config: TieredModelConfig): void;
   generate(options: GenerateOptions): Promise<CompletionResponse>;
   stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
   embed(texts: readonly string[], signal?: AbortSignal): Promise<Float32Array[]>;

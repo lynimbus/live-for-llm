@@ -19,13 +19,19 @@ export function createModelRouter(params: {
   readonly config: TieredModelConfig;
   readonly fetchImpl?: FetchLike;
 }): ModelRouter {
+  let currentConfig = params.config;
+
   return {
     getProfile(role: ModelRole): ModelProfile {
-      return params.config[role];
+      return currentConfig[role];
+    },
+
+    updateConfig(config: TieredModelConfig): void {
+      currentConfig = config;
     },
 
     generate(options: GenerateOptions): Promise<CompletionResponse> {
-      const profile = params.config[options.role];
+      const profile = currentConfig[options.role];
       return generateCompletion({
         profile,
         messages: options.messages,
@@ -36,7 +42,7 @@ export function createModelRouter(params: {
     },
 
     stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-      const profile = params.config[options.role];
+      const profile = currentConfig[options.role];
       return streamCompletion({
         profile,
         messages: options.messages,
@@ -47,7 +53,7 @@ export function createModelRouter(params: {
     },
 
     embed(texts: readonly string[], signal?: AbortSignal): Promise<Float32Array[]> {
-      const profile = params.config.embedding;
+      const profile = currentConfig.embedding;
       return generateEmbeddings({
         profile,
         texts,

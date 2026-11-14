@@ -6,9 +6,12 @@ import {
   type MemoryDraft,
   type MemoryId,
   type MemoryRecord,
+  type ModelSettingsSummary,
+  type ModelSettingsUpdate,
   type PolicyConfig,
   type ProactiveRule,
   type RelationshipState,
+  type RelationshipUpdate,
   type TaskId,
   type TaskRecord,
   type TrustPolicyMode,
@@ -17,6 +20,7 @@ import {
 import { signal, type Signal } from "nsh";
 import {
   type DaemonTransport,
+  DEFAULT_MODEL_SETTINGS,
   EMPTY_SNAPSHOT,
   createDaemonTransport,
 } from "./client";
@@ -37,6 +41,7 @@ export interface CompanionUiStore {
   readonly screenshots: Signal<Record<string, string>>;
   readonly policy: Signal<PolicyConfig>;
   readonly proactiveRules: Signal<readonly ProactiveRule[]>;
+  readonly modelSettings: Signal<ModelSettingsSummary>;
   readonly statusBanner: Signal<string>;
   connect(): void;
   disconnect(): void;
@@ -47,6 +52,8 @@ export interface CompanionUiStore {
   addMemory(draft: MemoryDraft): Promise<void>;
   deleteMemory(memoryId: MemoryId): Promise<void>;
   setPolicyMode(mode: TrustPolicyMode): Promise<void>;
+  updateModelSettings(settings: ModelSettingsUpdate): Promise<boolean>;
+  updateRelationship(patch: RelationshipUpdate): Promise<boolean>;
   exportMarkdown(): Promise<void>;
   importMarkdown(): Promise<void>;
 }
@@ -76,6 +83,7 @@ export function createCompanionUiStore(options?: {
   const screenshots = signal<Record<string, string>>({});
   const policy = signal<PolicyConfig>(EMPTY_SNAPSHOT.policy);
   const proactiveRules = signal<readonly ProactiveRule[]>(EMPTY_SNAPSHOT.proactiveRules);
+  const modelSettings = signal<ModelSettingsSummary>(DEFAULT_MODEL_SETTINGS);
   const statusBanner = signal("");
 
   const makeTransport = options?.transportFactory ?? createDaemonTransport;
@@ -164,6 +172,12 @@ export function createCompanionUiStore(options?: {
       case "policy.updated":
         policy.set(event.policy);
         return;
+      case "models.updated":
+        modelSettings.set(event.settings);
+        return;
+      case "relationship.updated":
+        relationship.set(event.relationship);
+        return;
       case "pong":
         return;
       case "error":
@@ -194,6 +208,9 @@ export function createCompanionUiStore(options?: {
         tasks.set(snap.tasks);
         policy.set(snap.policy);
         proactiveRules.set(snap.proactiveRules);
+        if (snap.modelSettings) {
+          modelSettings.set(snap.modelSettings);
+        }
         statusBanner.set("");
       })
       .catch((err) => {
@@ -240,6 +257,7 @@ export function createCompanionUiStore(options?: {
     screenshots,
     policy,
     proactiveRules,
+    modelSettings,
     statusBanner,
     connect,
     disconnect,
@@ -291,6 +309,18 @@ export function createCompanionUiStore(options?: {
         const next: PolicyConfig = { ...policy(), mode };
         await transport.sendCommand({ kind: "policy.update", policy: next });
         policy.set(next);
+      });
+    },
+    async updateModelSettings(settings: ModelSettingsUpdate): Promise<boolean> {
+      return runAction(async () => {
+        await transport.sendCommand({ kind: "models.update", settings });
+        statusBanner.set("API 与模型配置已保存并生效");
+      });
+    },
+    async updateRelationship(patch: RelationshipUpdate): Promise<boolean> {
+      return runAction(async () => {
+        await transport.sendCommand({ kind: "relationship.update", patch });
+        statusBanner.set("伙伴档案已更新");
       });
     },
     async exportMarkdown() {

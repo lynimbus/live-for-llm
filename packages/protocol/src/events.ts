@@ -17,6 +17,7 @@ import {
 import {
   type MemoryDraft,
   type MemoryRecord,
+  type RelationshipState,
   parseMemoryDraft,
   parseMemoryRecord,
 } from "./memory.ts";
@@ -48,6 +49,41 @@ export interface ChatMessage {
   readonly createdAt: string;
   readonly proactive?: boolean;
   readonly linkedTaskId?: TaskId;
+}
+
+export const LLM_PROVIDER_KINDS = ["openai_compatible", "anthropic", "gemini"] as const;
+export type LlmProviderKind = (typeof LLM_PROVIDER_KINDS)[number];
+
+export interface ModelSettingsSummary {
+  readonly provider: LlmProviderKind;
+  readonly baseUrl: string;
+  readonly companionModel: string;
+  readonly taskModel: string;
+  readonly memoryModel: string;
+  readonly visionModel: string;
+  readonly embeddingModel: string;
+  readonly hasApiKey: boolean;
+  readonly apiKeyMasked?: string;
+  readonly apiKeyEnv?: string;
+}
+
+export interface ModelSettingsUpdate {
+  readonly provider: LlmProviderKind;
+  readonly baseUrl: string;
+  readonly companionModel: string;
+  readonly taskModel: string;
+  readonly memoryModel?: string;
+  readonly visionModel?: string;
+  readonly embeddingModel?: string;
+  readonly apiKey?: string;
+  readonly clearApiKey?: boolean;
+  readonly apiKeyEnv?: string;
+}
+
+export interface RelationshipUpdate {
+  readonly companionName?: string;
+  readonly userName?: string;
+  readonly currentMood?: string;
 }
 
 export interface ProactiveRule {
@@ -97,6 +133,14 @@ export type ClientCommand =
       readonly rule: ProactiveRule;
     }
   | {
+      readonly kind: "models.update";
+      readonly settings: ModelSettingsUpdate;
+    }
+  | {
+      readonly kind: "relationship.update";
+      readonly patch: RelationshipUpdate;
+    }
+  | {
       readonly kind: "ping";
       readonly sentAt: string;
     };
@@ -141,6 +185,14 @@ export type DaemonEvent =
   | {
       readonly kind: "policy.updated";
       readonly policy: PolicyConfig;
+    }
+  | {
+      readonly kind: "models.updated";
+      readonly settings: ModelSettingsSummary;
+    }
+  | {
+      readonly kind: "relationship.updated";
+      readonly relationship: RelationshipState;
     }
   | {
       readonly kind: "pong";
@@ -203,6 +255,107 @@ function parseProactiveRule(raw: unknown): ProactiveRule {
   };
 }
 
+function parseModelSettingsUpdate(raw: unknown): ModelSettingsUpdate {
+  const obj = expectObject(raw, "ModelSettingsUpdate");
+  const memoryModel = expectOptionalString(obj["memoryModel"], "ModelSettingsUpdate.memoryModel");
+  const visionModel = expectOptionalString(obj["visionModel"], "ModelSettingsUpdate.visionModel");
+  const embeddingModel = expectOptionalString(
+    obj["embeddingModel"],
+    "ModelSettingsUpdate.embeddingModel",
+  );
+  const apiKey = expectOptionalString(obj["apiKey"], "ModelSettingsUpdate.apiKey");
+  const apiKeyEnv = expectOptionalString(obj["apiKeyEnv"], "ModelSettingsUpdate.apiKeyEnv");
+  const clearApiKey =
+    obj["clearApiKey"] === undefined
+      ? undefined
+      : expectBoolean(obj["clearApiKey"], "ModelSettingsUpdate.clearApiKey");
+
+  return {
+    provider: expectEnum(obj["provider"], LLM_PROVIDER_KINDS, "ModelSettingsUpdate.provider"),
+    baseUrl: expectNonEmptyString(obj["baseUrl"], "ModelSettingsUpdate.baseUrl").trim(),
+    companionModel: expectNonEmptyString(
+      obj["companionModel"],
+      "ModelSettingsUpdate.companionModel",
+    ).trim(),
+    taskModel: expectNonEmptyString(obj["taskModel"], "ModelSettingsUpdate.taskModel").trim(),
+    ...(memoryModel !== undefined && memoryModel.trim() ? { memoryModel: memoryModel.trim() } : {}),
+    ...(visionModel !== undefined && visionModel.trim() ? { visionModel: visionModel.trim() } : {}),
+    ...(embeddingModel !== undefined && embeddingModel.trim()
+      ? { embeddingModel: embeddingModel.trim() }
+      : {}),
+    ...(apiKey !== undefined ? { apiKey: apiKey.trim() } : {}),
+    ...(clearApiKey !== undefined ? { clearApiKey } : {}),
+    ...(apiKeyEnv !== undefined && apiKeyEnv.trim() ? { apiKeyEnv: apiKeyEnv.trim() } : {}),
+  };
+}
+
+function parseModelSettingsSummary(raw: unknown): ModelSettingsSummary {
+  const obj = expectObject(raw, "ModelSettingsSummary");
+  const apiKeyMasked = expectOptionalString(obj["apiKeyMasked"], "ModelSettingsSummary.apiKeyMasked");
+  const apiKeyEnv = expectOptionalString(obj["apiKeyEnv"], "ModelSettingsSummary.apiKeyEnv");
+  return {
+    provider: expectEnum(obj["provider"], LLM_PROVIDER_KINDS, "ModelSettingsSummary.provider"),
+    baseUrl: expectNonEmptyString(obj["baseUrl"], "ModelSettingsSummary.baseUrl"),
+    companionModel: expectNonEmptyString(
+      obj["companionModel"],
+      "ModelSettingsSummary.companionModel",
+    ),
+    taskModel: expectNonEmptyString(obj["taskModel"], "ModelSettingsSummary.taskModel"),
+    memoryModel: expectNonEmptyString(obj["memoryModel"], "ModelSettingsSummary.memoryModel"),
+    visionModel: expectNonEmptyString(obj["visionModel"], "ModelSettingsSummary.visionModel"),
+    embeddingModel: expectNonEmptyString(
+      obj["embeddingModel"],
+      "ModelSettingsSummary.embeddingModel",
+    ),
+    hasApiKey: expectBoolean(obj["hasApiKey"], "ModelSettingsSummary.hasApiKey"),
+    ...(apiKeyMasked !== undefined ? { apiKeyMasked } : {}),
+    ...(apiKeyEnv !== undefined ? { apiKeyEnv } : {}),
+  };
+}
+
+function parseRelationshipUpdate(raw: unknown): RelationshipUpdate {
+  const obj = expectObject(raw, "RelationshipUpdate");
+  const companionName = expectOptionalString(
+    obj["companionName"],
+    "RelationshipUpdate.companionName",
+  );
+  const userName = expectOptionalString(obj["userName"], "RelationshipUpdate.userName");
+  const currentMood = expectOptionalString(obj["currentMood"], "RelationshipUpdate.currentMood");
+  return {
+    ...(companionName !== undefined && companionName.trim()
+      ? { companionName: companionName.trim() }
+      : {}),
+    ...(userName !== undefined && userName.trim() ? { userName: userName.trim() } : {}),
+    ...(currentMood !== undefined && currentMood.trim()
+      ? { currentMood: currentMood.trim() }
+      : {}),
+  };
+}
+
+function parseRelationshipState(raw: unknown): RelationshipState {
+  const obj = expectObject(raw, "RelationshipState");
+  const rawAnniv = obj["anniversaries"];
+  if (!Array.isArray(rawAnniv)) {
+    throw new Error("Invalid RelationshipState.anniversaries: expected array");
+  }
+  const anniversaries = rawAnniv.map((item, idx) => {
+    const entry = expectObject(item, `RelationshipState.anniversaries[${idx}]`);
+    return {
+      label: expectString(entry["label"], "anniversary.label"),
+      date: expectString(entry["date"], "anniversary.date"),
+    };
+  });
+  return {
+    companionName: expectNonEmptyString(obj["companionName"], "RelationshipState.companionName"),
+    userName: expectNonEmptyString(obj["userName"], "RelationshipState.userName"),
+    affinityScore: expectNumber(obj["affinityScore"], "RelationshipState.affinityScore"),
+    currentMood: expectNonEmptyString(obj["currentMood"], "RelationshipState.currentMood"),
+    insideJokes: expectStringArray(obj["insideJokes"], "RelationshipState.insideJokes"),
+    anniversaries,
+    updatedAt: expectString(obj["updatedAt"], "RelationshipState.updatedAt"),
+  };
+}
+
 /** Validates an incoming WebSocket or HTTP command from desktop or mobile clients. */
 export function parseClientCommand(raw: unknown): ClientCommand {
   const obj = expectObject(raw, "ClientCommand");
@@ -235,6 +388,10 @@ export function parseClientCommand(raw: unknown): ClientCommand {
       return { kind: "policy.update", policy: parsePolicyConfig(obj["policy"]) };
     case "schedule.upsert":
       return { kind: "schedule.upsert", rule: parseProactiveRule(obj["rule"]) };
+    case "models.update":
+      return { kind: "models.update", settings: parseModelSettingsUpdate(obj["settings"]) };
+    case "relationship.update":
+      return { kind: "relationship.update", patch: parseRelationshipUpdate(obj["patch"]) };
     case "ping":
       return { kind: "ping", sentAt: expectString(obj["sentAt"], "ping.sentAt") };
     default:
@@ -316,6 +473,13 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent {
     }
     case "policy.updated":
       return { kind: "policy.updated", policy: parsePolicyConfig(obj["policy"]) };
+    case "models.updated":
+      return { kind: "models.updated", settings: parseModelSettingsSummary(obj["settings"]) };
+    case "relationship.updated":
+      return {
+        kind: "relationship.updated",
+        relationship: parseRelationshipState(obj["relationship"]),
+      };
     case "pong":
       return { kind: "pong", receivedAt: expectString(obj["receivedAt"], "pong.receivedAt") };
     case "error":

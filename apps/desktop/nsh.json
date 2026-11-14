@@ -1,7 +1,54 @@
 {
-  "name": "CompanionDesktop",
-  "id": "com.example.companiondesktop",
+  "name": "Livia · live-for-llm",
+  "id": "dev.liveforllm.desktop",
   "version": "1.0.0",
   "build": 1,
-  "rust": "."
+  "rust": ".",
+  "theme": {
+    "cssVars": {
+      "theme": {
+        "radius": "0.65rem"
+      },
+      "light": {
+        "background": "#faf9f7",
+        "foreground": "#1c1917",
+        "card": "#ffffff",
+        "card-foreground": "#1c1917",
+        "popover": "#ffffff",
+        "popover-foreground": "#1c1917",
+        "primary": "#6d4aff",
+        "primary-foreground": "#ffffff",
+        "secondary": "#f1eee9",
+        "secondary-foreground": "#292524",
+        "muted": "#f5f3ef",
+        "muted-foreground": "#78716c",
+        "accent": "#ede9fe",
+        "accent-foreground": "#4c1d95",
+        "destructive": "#dc2626",
+        "border": "#e7e2da",
+        "input": "#e7e2da",
+        "ring": "#7c5cff"
+      },
+      "dark": {
+        "background": "#111116",
+        "foreground": "#f5f4f8",
+        "card": "#181820",
+        "card-foreground": "#f5f4f8",
+        "popover": "#181820",
+        "popover-foreground": "#f5f4f8",
+        "primary": "#7c5cff",
+        "primary-foreground": "#ffffff",
+        "secondary": "#232330",
+        "secondary-foreground": "#e4e3ee",
+        "muted": "#1e1e28",
+        "muted-foreground": "#9a98ad",
+        "accent": "#2b2548",
+        "accent-foreground": "#ede9fe",
+        "destructive": "#ef4444",
+        "border": "#2b2b38",
+        "input": "#2e2e3d",
+        "ring": "#8b6eff"
+      }
+    }
+  }
 }

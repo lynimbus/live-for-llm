@@ -30,7 +30,7 @@ export interface MemorySearchOptions extends MemoryQuery {
 }
 
 const DEFAULT_RELATIONSHIP_STATE: RelationshipState = {
-  companionName: "Alma",
+  companionName: "Livia",
   userName: "你",
   affinityScore: 0.5,
   currentMood: "warm",

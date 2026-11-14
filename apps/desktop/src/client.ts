@@ -5,6 +5,7 @@ import {
   type DaemonEvent,
   DEFAULT_POLICY_CONFIG,
   type MemoryRecord,
+  type ModelSettingsSummary,
   type PolicyConfig,
   type ProactiveRule,
   type RelationshipState,
@@ -20,6 +21,7 @@ export interface DaemonStateSnapshot {
   readonly tasks: readonly TaskRecord[];
   readonly policy: PolicyConfig;
   readonly proactiveRules: readonly ProactiveRule[];
+  readonly modelSettings?: ModelSettingsSummary;
 }
 
 export interface DaemonTransport {
@@ -151,11 +153,22 @@ export function createDaemonTransport(params: {
   };
 }
 
+export const DEFAULT_MODEL_SETTINGS: ModelSettingsSummary = {
+  provider: "openai_compatible",
+  baseUrl: "https://api.openai.com/v1",
+  companionModel: "gpt-4o-mini",
+  taskModel: "gpt-4o",
+  memoryModel: "gpt-4o-mini",
+  visionModel: "gpt-4o",
+  embeddingModel: "text-embedding-3-small",
+  hasApiKey: false,
+};
+
 export const EMPTY_SNAPSHOT: Omit<DaemonStateSnapshot, "conversationId"> = {
   messages: [],
   memories: [],
   relationship: {
-    companionName: "Alma",
+    companionName: "Livia",
     userName: "你",
     affinityScore: 0.5,
     currentMood: "warm",
@@ -166,4 +179,5 @@ export const EMPTY_SNAPSHOT: Omit<DaemonStateSnapshot, "conversationId"> = {
   tasks: [],
   policy: DEFAULT_POLICY_CONFIG,
   proactiveRules: [],
+  modelSettings: DEFAULT_MODEL_SETTINGS,
 };

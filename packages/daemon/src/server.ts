@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { join } from "node:path";
-import { createModelRouter, type FetchLike } from "@live-for-llm/ai";
+import { createModelRouter, type FetchLike, type ModelRouter } from "@live-for-llm/ai";
 import { PersistentBrowserManager } from "@live-for-llm/browser";
 import {
   CompanionRuntime,
@@ -26,10 +26,16 @@ import {
   parseConversationId,
 } from "@live-for-llm/protocol";
 import { WebSocket, WebSocketServer } from "ws";
-import type { DaemonConfig } from "./config.ts";
+import {
+  applyModelSettingsUpdate,
+  type DaemonConfig,
+  saveDaemonConfig,
+  summarizeModelSettings,
+} from "./config.ts";
 
 export interface CompanionDaemonOptions {
   readonly config: DaemonConfig;
+  readonly configPath?: string;
   readonly fetchImpl?: FetchLike;
   readonly defaultConversationId?: string;
 }
@@ -75,11 +81,13 @@ function writeJson(res: http.ServerResponse, status: number, body: unknown): voi
 
 /** Local HTTP and WebSocket daemon hosting memory, companion runtime, harness, and persistent browser. */
 export class CompanionDaemon {
-  readonly config: DaemonConfig;
+  config: DaemonConfig;
   readonly store: MemoryStore;
   readonly browser: PersistentBrowserManager;
   readonly runtime: CompanionRuntime;
   readonly scheduler: ProactiveScheduler;
+  private readonly router: ModelRouter;
+  private readonly configPath: string | undefined;
   private readonly clients = new Set<WebSocket>();
   private readonly startedAt = Date.now();
   private server: http.Server | undefined;
@@ -88,6 +96,7 @@ export class CompanionDaemon {
 
   constructor(options: CompanionDaemonOptions) {
     this.config = options.config;
+    this.configPath = options.configPath;
     const dbPath =
       this.config.dataDir === ":memory:"
         ? ":memory:"
@@ -105,6 +114,7 @@ export class CompanionDaemon {
       config: this.config.models,
       ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     });
+    this.router = router;
 
     const profileId = parseBrowserProfileId("default_user");
     const browserTools = createBrowserTools({
@@ -205,6 +215,34 @@ export class CompanionDaemon {
         this.store.upsertProactiveRule(cmd.rule);
         return;
       }
+      case "models.update": {
+        const nextModels = applyModelSettingsUpdate(this.config.models, cmd.settings);
+        this.config = { ...this.config, models: nextModels };
+        this.router.updateConfig(nextModels);
+        if (this.config.dataDir !== ":memory:") {
+          const targetPath = this.configPath ?? join(this.config.dataDir, "config.json");
+          saveDaemonConfig(this.config, targetPath);
+        }
+        this.broadcastDirect({
+          kind: "models.updated",
+          settings: summarizeModelSettings(nextModels),
+        });
+        return;
+      }
+      case "relationship.update": {
+        const current = this.store.getRelationshipState();
+        const next = this.store.updateRelationshipState({
+          ...current,
+          ...(cmd.patch.companionName ? { companionName: cmd.patch.companionName } : {}),
+          ...(cmd.patch.userName ? { userName: cmd.patch.userName } : {}),
+          ...(cmd.patch.currentMood ? { currentMood: cmd.patch.currentMood } : {}),
+        });
+        this.broadcastDirect({
+          kind: "relationship.updated",
+          relationship: next,
+        });
+        return;
+      }
       case "ping": {
         this.broadcastDirect({ kind: "pong", receivedAt: new Date().toISOString() });
         return;
@@ -264,6 +302,7 @@ export class CompanionDaemon {
             tasks: this.store.listTasks(30),
             policy: this.store.getPolicy(),
             proactiveRules: this.store.listProactiveRules().map((r) => r.rule),
+            modelSettings: summarizeModelSettings(this.config.models),
           });
           return;
         }

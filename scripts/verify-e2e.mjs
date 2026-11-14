@@ -76,7 +76,7 @@ const llmServer = await startHttpServer((req, res) => {
                   {
                     kind: "episode",
                     title: "Requested live target check",
-                    content: "Asked Alma to inspect the local E2E browser target page.",
+                    content: "Asked Livia to inspect the local E2E browser target page.",
                     tags: ["e2e"],
                     importance: 0.7,
                   },
