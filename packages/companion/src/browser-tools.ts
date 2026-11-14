@@ -57,6 +57,7 @@ export function createBrowserTools(params: {
       },
     },
     riskTier: "local_write",
+    handlesOwnPolicy: true,
     async execute(args, ctx) {
       const selector = typeof args["selector"] === "string" ? args["selector"] : "";
       if (!selector) throw new Error("browser_click requires selector");
@@ -97,6 +98,7 @@ export function createBrowserTools(params: {
       },
     },
     riskTier: "local_write",
+    handlesOwnPolicy: true,
     async execute(args, ctx) {
       const selector = typeof args["selector"] === "string" ? args["selector"] : "";
       const value = typeof args["value"] === "string" ? args["value"] : "";

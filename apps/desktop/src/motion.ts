@@ -20,7 +20,7 @@ export function animateLayout(preset: "spring" | "ease" = "spring"): void {
 
 /** Creates an entrance motion helper with graceful fallback. */
 export function createEnterMotion(
-  preset: "fadeInUp" | "fadeInRight" | "fadeInDown" | "popIn",
+  preset: "fadeInUp" | "fadeInRight" | "fadeInLeft" | "fadeInDown" | "popIn",
   duration = 200,
 ) {
   return createMotion({ enter: preset, duration });

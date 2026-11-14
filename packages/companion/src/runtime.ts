@@ -49,6 +49,7 @@ export class CompanionRuntime {
   private readonly runners: TaskRunnerRegistry;
   private readonly emit: (event: DaemonEvent) => void;
   private readonly enableEmbeddings: boolean;
+  private readonly getDefaultRunnerId?: (taskKind: TaskKind) => string | undefined;
   private readonly activeAbortControllers = new Map<TaskId, AbortController>();
   private readonly pendingApprovals = new Map<
     ApprovalId,
@@ -62,12 +63,16 @@ export class CompanionRuntime {
     readonly runners: TaskRunnerRegistry;
     readonly emit: (event: DaemonEvent) => void;
     readonly enableEmbeddings?: boolean;
+    readonly getDefaultRunnerId?: (taskKind: TaskKind) => string | undefined;
   }) {
     this.router = params.router;
     this.store = params.store;
     this.runners = params.runners;
     this.emit = params.emit;
     this.enableEmbeddings = params.enableEmbeddings ?? false;
+    if (params.getDefaultRunnerId !== undefined) {
+      this.getDefaultRunnerId = params.getDefaultRunnerId;
+    }
   }
 
   async handleUserMessage(params: {
@@ -241,8 +246,9 @@ export class CompanionRuntime {
     readonly taskKind: TaskKind;
     readonly runnerId?: string;
   }): TaskId {
+    const resolvedRunnerId = params.runnerId ?? this.getDefaultRunnerId?.(params.taskKind);
     const runner = this.runners.resolve({
-      ...(params.runnerId ? { runnerId: params.runnerId } : {}),
+      ...(resolvedRunnerId ? { runnerId: resolvedRunnerId } : {}),
       taskKind: params.taskKind,
     });
     const taskId = parseTaskId(newId("task"));

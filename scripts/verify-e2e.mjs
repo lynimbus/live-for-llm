@@ -198,8 +198,13 @@ try {
     await liveApp.press("id:send-btn");
     await liveApp.waitFor("text:Checking the live page for you!");
     await liveApp.waitFor("text:Inspect local target", { timeout: 15000 });
-    await liveApp.waitFor("text:browser_research • 已完成：Verified title: Live Browser Target", { timeout: 15000 });
-    await liveApp.press("id:toggle-settings");
+    await liveApp.waitFor("text:已完成", { timeout: 15000 });
+    await liveApp.press("text:Inspect local target");
+    await liveApp.waitUntil(
+      () => liveApp.texts().some((line) => line.includes("已完成：Verified title: Live Browser Target")),
+      { timeout: 5000 },
+    );
+    await liveApp.press("id:avatar-settings-btn");
     await liveApp.waitFor("id:settings-page");
     await liveApp.press("id:settings-tab-memories");
     await liveApp.waitFor("text:[经历] Requested live target check", { timeout: 5000 });

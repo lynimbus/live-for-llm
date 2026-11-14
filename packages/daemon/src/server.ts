@@ -37,9 +37,32 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
   applyModelSettingsUpdate,
   type DaemonConfig,
+  resolveConfiguredRunnerId,
   saveDaemonConfig,
   summarizeModelSettings,
 } from "./config.ts";
+
+function parseCustomCliArgs(rawArgs: string | undefined, goal: string): string[] {
+  const tokens: string[] = [];
+  if (rawArgs && rawArgs.trim()) {
+    const regex = /"([^"]*)"|'([^']*)'|\S+/g;
+    for (const match of rawArgs.matchAll(regex)) {
+      tokens.push(match[1] ?? match[2] ?? match[0]);
+    }
+  }
+  let substituted = false;
+  const resolved = tokens.map((tok) => {
+    if (tok.includes("{goal}")) {
+      substituted = true;
+      return tok.replaceAll("{goal}", goal);
+    }
+    return tok;
+  });
+  if (!substituted) {
+    resolved.push(goal);
+  }
+  return resolved;
+}
 
 export interface CompanionDaemonOptions {
   readonly config: DaemonConfig;
@@ -134,8 +157,10 @@ export class CompanionDaemon {
     });
     const utilityTools = createUtilityTools({
       workspaceRoot: process.cwd(),
+      getWorkspaceRoot: () => this.config.harness.workingDir || process.cwd(),
       getPolicy: () => this.store.getPolicy(),
     });
+    const resolveCwd = () => this.config.harness.workingDir || undefined;
 
     const registry = new TaskRunnerRegistry()
       .register(
@@ -143,6 +168,7 @@ export class CompanionDaemon {
           id: "builtin-agent",
           label: "Built-in Browser & Workspace Agent",
           router,
+          getPolicy: () => this.store.getPolicy(),
           tools: [...browserTools, ...utilityTools],
           systemPrompt:
             "You are the background execution harness. You have both persistent browser automation tools (browser_*) and local workspace/utility tools (get_current_time, list_directory, read_local_file, write_local_file, run_shell_command). Use the right tools for the goal and return a concise factual summary.",
@@ -150,20 +176,82 @@ export class CompanionDaemon {
       )
       .register(
         new ExternalCliRunner({
+          id: "codex-cli",
+          label: "Codex CLI",
+          command: "codex",
+          cwd: resolveCwd,
+          buildArgs: (goal) =>
+            this.store.getPolicy().mode === "yolo"
+              ? ["exec", "--dangerously-bypass-approvals-and-sandbox", goal]
+              : ["exec", "--full-auto", goal],
+          supportedKinds: ["harness_coding", "shell_utility"],
+        }),
+      )
+      .register(
+        new ExternalCliRunner({
+          id: "claude-cli",
+          label: "Claude Code CLI",
+          command: "claude",
+          cwd: resolveCwd,
+          buildArgs: (goal) =>
+            this.store.getPolicy().mode === "yolo"
+              ? ["-p", "--dangerously-skip-permissions", goal]
+              : ["-p", goal],
+          supportedKinds: ["harness_coding", "shell_utility"],
+        }),
+      )
+      .register(
+        new ExternalCliRunner({
           id: "pi-cli",
           label: "External Pi Harness",
           command: "pi",
+          cwd: resolveCwd,
           buildArgs: (goal) => ["--print", goal],
-          supportedKinds: ["harness_coding"],
+          supportedKinds: ["harness_coding", "shell_utility"],
+        }),
+      )
+      .register(
+        new ExternalCliRunner({
+          id: "opencode-cli",
+          label: "OpenCode CLI",
+          command: "opencode",
+          cwd: resolveCwd,
+          buildArgs: (goal) => ["run", goal],
+          supportedKinds: ["harness_coding", "shell_utility"],
+        }),
+      )
+      .register(
+        new ExternalCliRunner({
+          id: "custom-cli",
+          label: "Custom Harness CLI",
+          command: () => {
+            const cmd = this.config.harness.customCommand?.trim() ?? "";
+            if (!cmd) {
+              throw new Error("Custom harness command is not configured");
+            }
+            return cmd;
+          },
+          cwd: resolveCwd,
+          buildArgs: (goal) => parseCustomCliArgs(this.config.harness.customArgs, goal),
+          supportedKinds: ["harness_coding", "shell_utility"],
         }),
       );
 
     const broadcast = (event: DaemonEvent) => {
-      const payload = JSON.stringify(event);
-      for (const client of this.clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(payload);
+      const sendRaw = (evt: DaemonEvent) => {
+        const payload = JSON.stringify(evt);
+        for (const client of this.clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(payload);
+          }
         }
+      };
+      sendRaw(event);
+      if (event.kind === "chat.message" || event.kind === "proactive.message") {
+        sendRaw({
+          kind: "conversations.updated",
+          conversations: this.store.listConversations(),
+        });
       }
     };
 
@@ -173,6 +261,7 @@ export class CompanionDaemon {
       runners: registry,
       emit: broadcast,
       enableEmbeddings: this.config.enableEmbeddings,
+      getDefaultRunnerId: (taskKind) => resolveConfiguredRunnerId(this.config.harness, taskKind),
     });
 
     this.scheduler = new ProactiveScheduler({
@@ -197,11 +286,22 @@ export class CompanionDaemon {
         return;
       }
       case "chat.recall": {
-        this.store.recallChatMessage(cmd.conversationId, cmd.messageId, cmd.by);
+        const target = this.store.getChatMessage(cmd.conversationId, cmd.messageId);
+        if (!target) {
+          throw new Error(`Message not found: ${cmd.messageId}`);
+        }
+        if (target.role !== "user") {
+          throw new Error("Only your own messages can be recalled");
+        }
+        this.store.recallChatMessage(cmd.conversationId, cmd.messageId, "user");
         this.broadcastDirect({
           kind: "chat.updated",
           conversationId: cmd.conversationId,
           messages: this.store.listChatMessages(cmd.conversationId, 100),
+        });
+        this.broadcastDirect({
+          kind: "conversations.updated",
+          conversations: this.store.listConversations(),
         });
         return;
       }
@@ -211,6 +311,40 @@ export class CompanionDaemon {
           kind: "chat.updated",
           conversationId: cmd.conversationId,
           messages: this.store.listChatMessages(cmd.conversationId, 100),
+        });
+        this.broadcastDirect({
+          kind: "conversations.updated",
+          conversations: this.store.listConversations(),
+        });
+        return;
+      }
+      case "conversation.create": {
+        this.store.createConversation({
+          ...(cmd.conversationId ? { id: cmd.conversationId } : {}),
+          ...(cmd.title ? { title: cmd.title } : {}),
+        });
+        this.broadcastDirect({
+          kind: "conversations.updated",
+          conversations: this.store.listConversations(),
+        });
+        return;
+      }
+      case "conversation.rename": {
+        this.store.renameConversation(cmd.conversationId, cmd.title);
+        this.broadcastDirect({
+          kind: "conversations.updated",
+          conversations: this.store.listConversations(),
+        });
+        return;
+      }
+      case "conversation.delete": {
+        this.store.deleteConversation(cmd.conversationId);
+        if (this.store.listConversations(1).length === 0) {
+          this.store.createConversation({ id: parseConversationId("conv_main") });
+        }
+        this.broadcastDirect({
+          kind: "conversations.updated",
+          conversations: this.store.listConversations(),
         });
         return;
       }
@@ -260,6 +394,18 @@ export class CompanionDaemon {
         this.broadcastDirect({
           kind: "models.updated",
           settings: summarizeModelSettings(nextModels),
+        });
+        return;
+      }
+      case "harness.update": {
+        this.config = { ...this.config, harness: cmd.settings };
+        if (this.config.dataDir !== ":memory:") {
+          const targetPath = this.configPath ?? join(this.config.dataDir, "config.json");
+          saveDaemonConfig(this.config, targetPath);
+        }
+        this.broadcastDirect({
+          kind: "harness.updated",
+          settings: this.config.harness,
         });
         return;
       }
@@ -330,6 +476,7 @@ export class CompanionDaemon {
           );
           writeJson(res, 200, {
             conversationId: convId,
+            conversations: this.store.listConversations(),
             messages: this.store.listChatMessages(convId, 100),
             memories: this.store.listMemories({ limit: 100 }),
             relationship: this.store.getRelationshipState(),
@@ -337,6 +484,7 @@ export class CompanionDaemon {
             policy: this.store.getPolicy(),
             proactiveRules: this.store.listProactiveRules().map((r) => r.rule),
             modelSettings: summarizeModelSettings(this.config.models),
+            harnessSettings: this.config.harness,
           });
           return;
         }

@@ -5,6 +5,21 @@ const BASE_URL = "http://mock-daemon.local:4777";
 function makeSnapshot() {
   return {
     conversationId: "conv_default",
+    conversations: [
+      {
+        id: "conv_default",
+        title: "日常聊聊",
+        createdAt: "2026-11-15T05:00:00.000Z",
+        updatedAt: "2026-11-15T05:00:10.000Z",
+        lastMessagePreview: "今天工作怎么样",
+      },
+      {
+        id: "conv_code",
+        title: "调试后端",
+        createdAt: "2026-11-15T04:00:00.000Z",
+        updatedAt: "2026-11-15T04:30:00.000Z",
+      },
+    ],
     messages: [
       {
         id: "msg_1",
@@ -49,7 +64,7 @@ function makeSnapshot() {
       companionName: "Livia",
       userName: "Lyn",
       affinityScore: 0.72,
-      currentMood: "warm",
+      currentMood: "calm",
       insideJokes: [],
       anniversaries: [],
       updatedAt: "2026-11-15T05:00:00.000Z",
@@ -60,6 +75,7 @@ function makeSnapshot() {
         conversationId: "conv_default",
         taskKind: "browser_post",
         title: "Post release note",
+        runnerId: "builtin-agent",
         state: {
           kind: "awaiting_approval",
           approvalId: "appr_1",
@@ -71,6 +87,20 @@ function makeSnapshot() {
         },
         createdAt: "2026-11-15T05:01:00.000Z",
         updatedAt: "2026-11-15T05:01:00.000Z",
+      },
+      {
+        id: "task_done_1",
+        conversationId: "conv_default",
+        taskKind: "shell_utility",
+        title: "Check workspace status",
+        runnerId: "builtin-agent",
+        state: {
+          kind: "completed",
+          summary: "Workspace clean.",
+          completedAt: "2026-11-15T04:55:00.000Z",
+        },
+        createdAt: "2026-11-15T04:50:00.000Z",
+        updatedAt: "2026-11-15T04:55:00.000Z",
       },
     ],
     policy: {
@@ -88,21 +118,14 @@ function makeSnapshot() {
       embeddingModel: "text-embedding-3-small",
       hasApiKey: false,
     },
-    proactiveRules: [
-      {
-        id: "sched_1",
-        label: "Evening check-in",
-        cronOrIntervalMinutes: 120,
-        quietHoursStart: 23,
-        quietHoursEnd: 7,
-        enabled: true,
-        promptHint: "Ask how the day went.",
-      },
-    ],
+    harnessSettings: {
+      defaultBackend: "builtin",
+    },
+    proactiveRules: [],
   };
 }
 
-test("renders zh-CN chat with silent affinity, immediate clear, recall/multiselect, tasks sidebar, and settings page", async () => {
+test("ChatGPT-style workspace, right-click own-message recall, sessions sidebar, collapsed tasks accordion, and YOLO harness settings", async () => {
   const postedCommands: Array<{ kind: string; [key: string]: unknown }> = [];
   let exportedCount = 0;
 
@@ -113,7 +136,6 @@ test("renders zh-CN chat with silent affinity, immediate clear, recall/multisele
     host: {
       params: {
         daemonUrl: BASE_URL,
-        drawerOpen: false,
       },
     },
     network: {
@@ -148,22 +170,29 @@ test("renders zh-CN chat with silent affinity, immediate clear, recall/multisele
   });
 
   await app.waitFor("text:Livia");
-  expect(app.texts()).toContain("与 Lyn");
-  expect(app.texts()).toContain("需要确认：Submit public post on example.com");
+  // Tasks sidebar is collapsed by default; sessions sidebar is visible.
+  expect(app.shows("id:tasks-sidebar")).toBe(false);
+  expect(app.shows("id:sessions-sidebar")).toBe(true);
+  expect(app.texts()).toContain("日常聊聊");
+  expect(app.texts()).toContain("调试后端");
   expect(app.texts().some((line) => line.toLowerCase().includes("affinity"))).toBe(false);
+  // No inline recall/copy chips rendered under bubbles.
+  expect(app.count("id:copy-msg_1")).toBe(0);
+  expect(app.count("id:recall-msg_2")).toBe(0);
 
+  // Composer clears immediately on submit.
   await app.type("id:chat-input", "早安呀");
   await app.press("id:send-btn");
   expect(app.value("id:chat-input")).toBe("");
   expect(app.texts()).toContain("1 轮");
   expect(postedCommands.some((c) => c.kind === "chat.send" && c.content === "早安呀")).toBe(true);
 
-  await app.press("id:recall-msg_1");
-  await app.waitFor("id:recalled-msg_1");
-  expect(app.texts()).toContain("Livia 撤回了一条消息");
-  expect(postedCommands.some((c) => c.kind === "chat.recall" && c.messageId === "msg_1")).toBe(true);
-
-  await app.press("id:select-msg_2");
+  // Companion message right-click menu must NOT offer Recall.
+  await app.rightClick("id:msg-bubble-msg_1");
+  const companionMenu = app.menu();
+  expect(companionMenu).not.toBeNull();
+  expect(companionMenu!.map((m) => m.label)).toEqual(["复制", "多选", "删除"]);
+  await app.chooseMenuItem("多选");
   await app.waitFor("id:selection-toolbar");
   await app.press("id:delete-selected-btn");
   expect(
@@ -171,24 +200,38 @@ test("renders zh-CN chat with silent affinity, immediate clear, recall/multisele
       (c) =>
         c.kind === "chat.delete" &&
         Array.isArray(c.messageIds) &&
-        c.messageIds.includes("msg_2"),
+        c.messageIds.includes("msg_1"),
     ),
   ).toBe(true);
 
-  await app.press("id:banner-approve-btn");
-  expect(
-    postedCommands.some(
-      (c) => c.kind === "approval.decide" && c.approvalId === "appr_1" && c.decision === "approved",
-    ),
-  ).toBe(true);
+  // Own (user) message right-click menu offers Recall.
+  await app.rightClick("id:msg-bubble-msg_2");
+  const userMenu = app.menu();
+  expect(userMenu).not.toBeNull();
+  expect(userMenu!.map((m) => m.label)).toEqual(["复制", "多选", "撤回", "删除"]);
+  await app.chooseMenuItem("撤回");
+  await app.waitFor("id:recalled-msg_2");
+  expect(app.texts()).toContain("你撤回了一条消息");
+  expect(postedCommands.some((c) => c.kind === "chat.recall" && c.messageId === "msg_2")).toBe(true);
 
+  // Multi-session creation via New chat button.
+  await app.press("id:new-chat-btn");
+  await app.waitFor("id:welcome-card");
+  expect(postedCommands.some((c) => c.kind === "conversation.create")).toBe(true);
+
+  // Open Tasks sidebar via icon button and verify expandable accordion rows.
   await app.press("id:toggle-drawer");
   await app.waitFor("id:tasks-sidebar");
-  expect(app.texts()).toContain("Post release note");
+  expect(app.shows("id:task-details-task_done_1")).toBe(false);
+  await app.press("id:task-toggle-task_done_1");
+  await app.waitFor("id:task-details-task_done_1");
+  expect(app.texts().some((line) => line.includes("Workspace clean."))).toBe(true);
 
-  await app.press("id:toggle-settings");
+  // Click avatar to enter Settings page.
+  await app.press("id:avatar-settings-btn");
   await app.waitFor("id:settings-page");
 
+  await app.press("id:settings-tab-models");
   await app.clear("id:api-base-url-input");
   await app.type("id:api-base-url-input", "https://api.custom-llm.example/v1");
   await app.type("id:api-key-input", "sk-custom-test-key");
@@ -208,6 +251,27 @@ test("renders zh-CN chat with silent affinity, immediate clear, recall/multisele
     }),
   ).toBe(true);
 
+  await app.press("id:settings-tab-harness");
+  await app.waitFor("id:harness-codex");
+  await app.press("id:harness-codex");
+  await app.press("id:save-harness-btn");
+  expect(
+    postedCommands.some((c) => {
+      if (c.kind !== "harness.update") return false;
+      const settings = c.settings as { defaultBackend?: string } | undefined;
+      return settings?.defaultBackend === "codex";
+    }),
+  ).toBe(true);
+
+  await app.press("id:policy-yolo");
+  expect(
+    postedCommands.some((c) => {
+      if (c.kind !== "policy.update") return false;
+      const policy = c.policy as { mode?: string } | undefined;
+      return policy?.mode === "yolo";
+    }),
+  ).toBe(true);
+
   await app.press("id:settings-tab-memories");
   await app.waitFor("text:[事实] Favorite tea");
   await app.type("id:memory-new-title", "Morning ritual");
@@ -224,18 +288,9 @@ test("renders zh-CN chat with silent affinity, immediate clear, recall/multisele
   expect(exportedCount).toBe(1);
 
   await app.press("id:settings-tab-general");
-  await app.waitFor("id:policy-confirm_external");
-  await app.press("id:policy-confirm_external");
-  expect(
-    postedCommands.some((c) => {
-      if (c.kind !== "policy.update") return false;
-      const policy = c.policy as { mode?: string } | undefined;
-      return policy?.mode === "confirm_external";
-    }),
-  ).toBe(true);
-
   await app.press("id:lang-en");
-  await app.waitFor("text:Back to Chat");
+  await app.press("id:close-settings-btn");
+  await app.waitFor("text:New chat");
 });
 
 test("renders empty welcome card in narrow split layout and submits starter prompt", async () => {
@@ -253,7 +308,8 @@ test("renders empty welcome card in narrow split layout and submits starter prom
     host: {
       params: {
         daemonUrl: BASE_URL,
-        drawerOpen: true,
+        sidebarOpen: false,
+        drawerOpen: false,
       },
     },
     network: {
@@ -275,8 +331,8 @@ test("renders empty welcome card in narrow split layout and submits starter prom
   });
 
   await app.waitFor("id:welcome-card");
-  await app.waitFor("id:tasks-sidebar");
-  expect(app.texts()).toContain("Livia · live-for-llm");
+  expect(app.shows("id:sessions-sidebar")).toBe(false);
+  expect(app.shows("id:tasks-sidebar")).toBe(false);
   expect(app.texts()).toContain("平时聊天自然简短点，不用太像客服。");
 
   await app.press("text:平时聊天自然简短点，不用太像客服。");

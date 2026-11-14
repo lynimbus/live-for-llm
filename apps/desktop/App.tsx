@@ -1,5 +1,5 @@
 import type { ChatMessage, MessageId, TaskRecord } from "@live-for-llm/protocol";
-import { DaemonDefaults, DaemonSidecar, SessionMetrics, StatusPill } from "companiondesktop/native";
+import { DaemonDefaults, DaemonSidecar, SessionMetrics } from "companiondesktop/native";
 import {
   cleanup,
   Clipboard,
@@ -7,6 +7,7 @@ import {
   host,
   mount,
   Scroll,
+  type ScrollRef,
   signal,
   Text,
   View,
@@ -14,13 +15,14 @@ import {
 import { Button, Input, TextView } from "nsh/base";
 import { Menu, Window } from "nsh/desktop";
 import { currentLocale, loadPersistedLocale, t } from "./src/i18n.ts";
+import { NewChatIcon, SendArrowIcon, SidebarIcon, TasksIcon } from "./src/icons.tsx";
 import {
   animateLayout,
   BUTTON_ACTIVE_STYLE,
   BUTTON_MOTION_STYLE,
-  CARD_ELEVATION_STYLE,
   createEnterMotion,
 } from "./src/motion.ts";
+import { SessionsSidebar } from "./src/SessionsSidebar.tsx";
 import { SettingsPage } from "./src/SettingsPage.tsx";
 import {
   createCompanionUiStore,
@@ -102,47 +104,23 @@ function MarkdownContent(props: {
         heading2: "text-sm font-bold text-foreground",
         heading3: "text-sm font-semibold text-foreground",
         code: "font-mono text-xs bg-muted px-1 py-0.5 rounded text-foreground",
-        codeBlock: "rounded-lg bg-muted p-2.5 border border-border",
+        codeBlock: "rounded-xl bg-card p-3 border border-border",
         codeBlockCode: "font-mono text-xs text-foreground",
-        blockquote: "border-l-2 border-primary pl-2.5 text-muted-foreground",
-        link: "text-primary underline",
+        blockquote: "border-l-2 border-muted-foreground pl-3 text-muted-foreground",
+        link: "text-foreground underline",
       }}
       styles={{
-        root: { lineHeight: 20 },
-        paragraph: { lineHeight: 20 },
+        root: { lineHeight: 22 },
+        paragraph: { lineHeight: 22 },
       }}
     />
-  );
-}
-
-function BubbleActionChip(props: {
-  readonly testID?: string;
-  readonly label: string;
-  readonly danger?: boolean;
-  readonly onPress: () => void;
-}) {
-  return (
-    <Button
-      testID={props.testID}
-      onPress={props.onPress}
-      class="px-2 py-0.5 rounded bg-muted border border-border"
-      style={BUTTON_MOTION_STYLE}
-      hoverStyle={{ opacity: 0.9 }}
-      activeStyle={BUTTON_ACTIVE_STYLE}
-    >
-      <Text
-        class={props.danger ? "text-[10px] text-destructive" : "text-[10px] text-muted-foreground"}
-      >
-        {props.label}
-      </Text>
-    </Button>
   );
 }
 
 function ChatBubble(props: {
   readonly message: () => ChatMessage;
   readonly companionName: () => string;
-  readonly userName: () => string;
+  readonly companionInitial: () => string;
   readonly selectionMode: () => boolean;
   readonly selected: () => boolean;
   readonly onToggleSelect: (id: MessageId) => void;
@@ -151,7 +129,7 @@ function ChatBubble(props: {
   readonly onDelete: (id: MessageId) => void;
   readonly onCopy: (text: string) => void;
 }) {
-  const bubbleMotion = createEnterMotion("fadeInUp", 160);
+  const bubbleMotion = createEnterMotion("fadeInUp", 150);
   const msg = () => props.message();
   const isUser = () => msg().role === "user";
 
@@ -165,7 +143,7 @@ function ChatBubble(props: {
         testID={`recalled-${msg().id}`}
         style={[bubbleMotion.style, { alignSelf: "center", paddingVertical: 4 }]}
       >
-        <View class="px-3 py-1 rounded-full bg-muted border border-border">
+        <View class="px-3 py-1 rounded-full bg-secondary border border-border">
           <Text class="text-[11px] text-muted-foreground">{recalledLabel}</Text>
         </View>
       </View>
@@ -173,16 +151,16 @@ function ChatBubble(props: {
   }
 
   const openBubbleMenu = (pagePosition: { x: number; y: number }) => {
-    void Menu.popup(
-      [
-        { label: t("btnCopy"), onSelect: () => props.onCopy(msg().content) },
-        { label: t("btnRecall"), onSelect: () => props.onRecall(msg().id) },
-        { label: t("btnMultiSelect"), onSelect: () => props.onEnterSelection(msg().id) },
-        { type: "separator" },
-        { label: t("btnDelete"), onSelect: () => props.onDelete(msg().id) },
-      ],
-      pagePosition,
-    );
+    const items: Parameters<typeof Menu.popup>[0] = [
+      { label: t("btnCopy"), onSelect: () => props.onCopy(msg().content) },
+      { label: t("btnMultiSelect"), onSelect: () => props.onEnterSelection(msg().id) },
+      { type: "separator" },
+      ...(isUser()
+        ? [{ label: t("btnRecall"), onSelect: () => props.onRecall(msg().id) }]
+        : []),
+      { label: t("btnDelete"), onSelect: () => props.onDelete(msg().id) },
+    ];
+    void Menu.popup(items, pagePosition);
   };
 
   return (
@@ -194,7 +172,7 @@ function ChatBubble(props: {
           flexDirection: "row",
           alignItems: "flex-start",
           justifyContent: isUser() ? "flex-end" : "flex-start",
-          gap: 8,
+          gap: 10,
           width: "100%",
         },
       ]}
@@ -206,7 +184,7 @@ function ChatBubble(props: {
           class={
             props.selected()
               ? "px-2 py-1 rounded-md bg-primary border border-primary"
-              : "px-2 py-1 rounded-md bg-muted border border-border"
+              : "px-2 py-1 rounded-md bg-secondary border border-border"
           }
           style={[BUTTON_MOTION_STYLE, { alignSelf: "center" }]}
           activeStyle={BUTTON_ACTIVE_STYLE}
@@ -223,13 +201,56 @@ function ChatBubble(props: {
         </Button>
       </If>
 
-      <View
-        style={{
-          maxWidth: "78%",
-          minWidth: 0,
-          alignItems: isUser() ? "flex-end" : "flex-start",
-          gap: 4,
-        }}
+      <If
+        when={isUser()}
+        else={
+          <View
+            testID={`msg-bubble-${msg().id}`}
+            onContextMenu={(e) => openBubbleMenu(e.pagePosition)}
+            onPress={
+              props.selectionMode() ? () => props.onToggleSelect(msg().id) : undefined
+            }
+            class={
+              props.selected()
+                ? "px-3 py-2 rounded-2xl bg-secondary border border-primary"
+                : "py-1 rounded-2xl"
+            }
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: "row",
+              alignItems: "flex-start",
+              gap: 12,
+            }}
+          >
+            <View
+              class="bg-card border border-border"
+              style={{
+                width: 26,
+                height: 26,
+                borderRadius: 13,
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                marginTop: 2,
+              }}
+            >
+              <Text class="text-[11px] font-bold text-foreground">
+                {props.companionInitial()}
+              </Text>
+            </View>
+            <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+              <If when={msg().proactive || msg().role === "system"}>
+                <Text class="text-[11px] font-medium text-muted-foreground">
+                  {msg().role === "system"
+                    ? t("systemSender")
+                    : t("proactiveBadge", { name: props.companionName() })}
+                </Text>
+              </If>
+              <MarkdownContent content={() => msg().content} />
+            </View>
+          </View>
+        }
       >
         <View
           testID={`msg-bubble-${msg().id}`}
@@ -239,71 +260,19 @@ function ChatBubble(props: {
           }
           class={
             props.selected()
-              ? isUser()
-                ? "px-4 py-2.5 rounded-2xl bg-primary border-2 border-foreground"
-                : "px-4 py-2.5 rounded-2xl bg-card border-2 border-primary"
-              : isUser()
-                ? "px-4 py-2.5 rounded-2xl bg-primary"
-                : "px-4 py-2.5 rounded-2xl bg-card border border-border"
+              ? "px-4 py-2.5 rounded-3xl bg-secondary border-2 border-primary"
+              : "px-4 py-2.5 rounded-3xl bg-secondary"
           }
-          style={[
-            !isUser() ? CARD_ELEVATION_STYLE : undefined,
-            isUser() ? { borderTopRightRadius: 6, gap: 4 } : { borderTopLeftRadius: 6, gap: 4 },
-          ]}
+          style={{
+            maxWidth: "74%",
+            minWidth: 0,
+          }}
         >
-          <Text
-            class={
-              isUser()
-                ? "text-xs font-semibold text-primary-foreground"
-                : "text-xs font-semibold text-muted-foreground"
-            }
-          >
-            {isUser()
-              ? props.userName()
-              : msg().proactive
-                ? t("proactiveBadge", { name: props.companionName() })
-                : msg().role === "system"
-                  ? t("systemSender")
-                  : props.companionName()}
+          <Text class="text-sm text-foreground" style={{ lineHeight: 22 }}>
+            {msg().content}
           </Text>
-          <If
-            when={!isUser()}
-            else={
-              <Text class="text-sm text-primary-foreground" style={{ lineHeight: 20 }}>
-                {msg().content}
-              </Text>
-            }
-          >
-            <MarkdownContent content={() => msg().content} />
-          </If>
         </View>
-
-        <If when={!props.selectionMode()}>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
-            <BubbleActionChip
-              testID={`copy-${msg().id}`}
-              label={t("btnCopy")}
-              onPress={() => props.onCopy(msg().content)}
-            />
-            <BubbleActionChip
-              testID={`recall-${msg().id}`}
-              label={t("btnRecall")}
-              onPress={() => props.onRecall(msg().id)}
-            />
-            <BubbleActionChip
-              testID={`select-${msg().id}`}
-              label={t("btnMultiSelect")}
-              onPress={() => props.onEnterSelection(msg().id)}
-            />
-            <BubbleActionChip
-              testID={`delete-${msg().id}`}
-              label={t("btnDelete")}
-              danger
-              onPress={() => props.onDelete(msg().id)}
-            />
-          </View>
-        </If>
-      </View>
+      </If>
     </View>
   );
 }
@@ -322,13 +291,20 @@ export function App(props: AppProps = {}) {
   if (initialDrawer !== undefined) {
     store.drawerOpen.set(initialDrawer);
   }
+  const initialSidebar = readHostBoolean("sidebarOpen");
+  if (initialSidebar !== undefined) {
+    store.sidebarOpen.set(initialSidebar);
+  }
   const initialTab = readHostString("activeTab");
-  if (initialTab === "settings") {
+  if (initialTab === "settings" || initialTab === "models") {
     store.activePage.set("settings");
     store.settingsSection.set("models");
   } else if (initialTab === "memories") {
     store.activePage.set("settings");
     store.settingsSection.set("memories");
+  } else if (initialTab === "harness") {
+    store.activePage.set("settings");
+    store.settingsSection.set("harness");
   } else if (initialTab === "general") {
     store.activePage.set("settings");
     store.settingsSection.set("general");
@@ -341,6 +317,35 @@ export function App(props: AppProps = {}) {
   const selectedIds = signal<ReadonlySet<MessageId>>(new Set());
   const metrics = new SessionMetrics();
   const attentionMotion = createEnterMotion("fadeInDown", 180);
+
+  let chatScrollRef: ScrollRef | undefined;
+  let chatContentHeight = 0;
+
+  function scrollChatToBottom(animated = true): void {
+    const runScroll = () => {
+      try {
+        chatScrollRef?.scrollTo({
+          y: Math.max(chatContentHeight, 999_999),
+          animated,
+        });
+      } catch {
+        // Ignore in unmounted test frames.
+      }
+    };
+    queueMicrotask(runScroll);
+    setTimeout(runScroll, 24);
+  }
+
+  effect(() => {
+    const _msgCount = store.messages().length;
+    const _stream = store.streamingReply();
+    const _conv = store.conversationId();
+    if (_msgCount > 0 || _stream.length > 0) {
+      scrollChatToBottom(true);
+    } else if (_conv) {
+      scrollChatToBottom(false);
+    }
+  });
 
   effect(() => {
     const name = store.relationship().companionName;
@@ -372,10 +377,12 @@ export function App(props: AppProps = {}) {
     }
     inFlightSends.update((n) => n + 1);
     animateLayout("spring");
+    scrollChatToBottom(true);
     try {
       const ok = await store.sendChat(text);
       if (ok) {
         turnCount.set(metrics.recordTurn());
+        scrollChatToBottom(true);
       } else if (!overrideText && !composerText().trim()) {
         composerText.set(text);
       }
@@ -463,11 +470,7 @@ export function App(props: AppProps = {}) {
     return name ? name.slice(0, 1).toUpperCase() : "L";
   };
 
-  const connectionTone = () => (store.connected() ? "ok" : "warn");
-  const connectionLabel = () =>
-    store.connected() ? t("statusConnected") : t("statusOffline");
-
-  const openSettingsSection = (section: SettingsSection = "models") => {
+  const openSettingsSection = (section: SettingsSection = "general") => {
     animateLayout("ease");
     store.settingsSection.set(section);
     store.activePage.set("settings");
@@ -484,420 +487,568 @@ export function App(props: AppProps = {}) {
         paddingLeft: "env(safe-area-inset-left)",
       }}
     >
-      <View
-        class="px-4 py-3 border-b border-border bg-card"
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-        }}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, minWidth: 0, flexShrink: 1 }}>
-          <View
-            class="bg-primary"
-            style={{
-              width: 34,
-              height: 34,
-              borderRadius: 17,
-              alignItems: "center",
-              justifyContent: "center",
-              position: "relative",
-            }}
-          >
-            <Text class="text-sm font-bold text-primary-foreground">{companionInitial()}</Text>
-            <View
-              class={
-                isCompanionBusy()
-                  ? "bg-amber-400"
-                  : store.connected()
-                    ? "bg-emerald-400"
-                    : "bg-muted-foreground"
-              }
-              style={{
-                width: 9,
-                height: 9,
-                borderRadius: 5,
-                position: "absolute",
-                right: -1,
-                bottom: -1,
-                borderWidth: 2,
-                borderColor: "#181820",
-                animationName: isCompanionBusy() ? "pulse" : "none",
-                animationDuration: 1200,
-                animationIterationCount: "infinite",
-              }}
-            />
-          </View>
-          <View style={{ gap: 1, minWidth: 0, flexShrink: 1 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text testID="companion-name" class="text-base font-semibold text-foreground">
-                {store.relationship().companionName}
-              </Text>
-              <View class="px-1.5 py-0.5 rounded bg-accent">
-                <Text class="text-[10px] font-semibold text-accent-foreground">
-                  {t("appTag")}
-                </Text>
-              </View>
-            </View>
-            <Text class="text-xs text-muted-foreground">
-              {t("headerForUser", { user: store.relationship().userName })}
-            </Text>
-          </View>
-        </View>
-
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text class="text-xs text-muted-foreground">
-            {t("turnsLabel", { count: turnCount() })}
-          </Text>
-          <StatusPill
-            testID="status-pill"
-            label={connectionLabel()}
-            tone={connectionTone()}
-            onPress={() => openSettingsSection("models")}
-          />
-          <If when={store.activePage() === "chat"}>
-            <Button
-              testID="toggle-drawer"
-              onPress={() => {
-                animateLayout("spring");
-                store.drawerOpen.update((open) => !open);
-              }}
-              class="px-3 py-1.5 rounded-lg bg-secondary border border-border"
-              style={BUTTON_MOTION_STYLE}
-              hoverStyle={{ opacity: 0.9 }}
-              activeStyle={BUTTON_ACTIVE_STYLE}
-            >
-              <Text class="text-xs font-medium text-secondary-foreground">
-                {activeTaskCount() > 0
-                  ? `${store.drawerOpen() ? t("navHideTasks") : t("navShowTasks")} (${activeTaskCount()})`
-                  : store.drawerOpen()
-                    ? t("navHideTasks")
-                    : t("navShowTasks")}
-              </Text>
-            </Button>
-          </If>
-          <Button
-            testID="toggle-settings"
-            onPress={() => {
-              animateLayout("ease");
-              if (store.activePage() === "settings") {
-                store.activePage.set("chat");
-              } else {
-                store.activePage.set("settings");
-              }
-            }}
-            class={
-              store.activePage() === "settings"
-                ? "px-3 py-1.5 rounded-lg bg-primary"
-                : "px-3 py-1.5 rounded-lg bg-secondary border border-border"
-            }
-            style={BUTTON_MOTION_STYLE}
-            hoverStyle={{ opacity: 0.9 }}
-            activeStyle={BUTTON_ACTIVE_STYLE}
-          >
-            <Text
-              class={
-                store.activePage() === "settings"
-                  ? "text-xs font-semibold text-primary-foreground"
-                  : "text-xs font-medium text-secondary-foreground"
-              }
-            >
-              {store.activePage() === "settings" ? t("navBackToChat") : t("navSettings")}
-            </Text>
-          </Button>
-        </View>
-      </View>
-
-      <If when={store.statusBanner()}>
-        {(banner) => (
-          <View class="px-4 py-1.5 bg-muted border-b border-border">
-            <Text testID="status-banner" class="text-xs text-muted-foreground">
-              {banner()}
-            </Text>
-          </View>
-        )}
-      </If>
-
-      <If when={findAttentionTask(store.tasks())}>
-        {(task) => (
-          <View
-            testID="attention-banner"
-            class="px-4 py-2.5 bg-accent border-b border-border"
-            style={[
-              attentionMotion.style,
-              {
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-              },
-            ]}
-          >
-            <Text
-              class="text-xs font-semibold text-accent-foreground"
-              style={{ flex: 1, minWidth: 0 }}
-            >
-              {describeAttentionTask(task())}
-            </Text>
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <If when={task().state.kind === "awaiting_approval"}>
-                <Button
-                  testID="banner-approve-btn"
-                  onPress={() => {
-                    const state = task().state;
-                    if (state.kind === "awaiting_approval") {
-                      animateLayout("ease");
-                      void store.decideApproval(state.approvalId, "approved");
-                    }
-                  }}
-                  class="px-3 py-1 rounded-md bg-primary"
-                  style={BUTTON_MOTION_STYLE}
-                  activeStyle={BUTTON_ACTIVE_STYLE}
-                >
-                  <Text class="text-xs font-semibold text-primary-foreground">
-                    {t("btnApprove")}
-                  </Text>
-                </Button>
-                <Button
-                  testID="banner-deny-btn"
-                  onPress={() => {
-                    const state = task().state;
-                    if (state.kind === "awaiting_approval") {
-                      animateLayout("ease");
-                      void store.decideApproval(state.approvalId, "denied");
-                    }
-                  }}
-                  class="px-3 py-1 rounded-md bg-destructive"
-                  style={BUTTON_MOTION_STYLE}
-                  activeStyle={BUTTON_ACTIVE_STYLE}
-                >
-                  <Text class="text-xs font-semibold text-primary-foreground">
-                    {t("btnDeny")}
-                  </Text>
-                </Button>
-              </If>
-              <If when={task().state.kind === "paused_for_user"}>
-                <Button
-                  testID="banner-resume-btn"
-                  onPress={() => void store.resumeBrowserTask(task().id)}
-                  class="px-3 py-1 rounded-md bg-primary"
-                  style={BUTTON_MOTION_STYLE}
-                  activeStyle={BUTTON_ACTIVE_STYLE}
-                >
-                  <Text class="text-xs font-semibold text-primary-foreground">
-                    {t("btnResumeBrowser")}
-                  </Text>
-                </Button>
-              </If>
-            </View>
-          </View>
-        )}
-      </If>
-
       <If
         when={store.activePage() === "settings"}
         else={
-          <View style={{ flex: 1, flexDirection: "row", minWidth: 0 }}>
+          <View style={{ flex: 1, flexDirection: "row", minWidth: 0, overflow: "hidden" }}>
+            <If when={store.sidebarOpen()}>
+              <SessionsSidebar store={store} isBusy={isCompanionBusy} />
+            </If>
+
             <View style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
-              <Scroll style={{ flex: 1, minWidth: 0 }} contentStyle={{ padding: 18, gap: 12 }}>
-                <If
-                  when={store.messages().length > 0}
-                  else={
+              {/* Minimal ChatGPT-style top header */}
+              <View
+                class="px-3 py-2.5 border-b border-border bg-background"
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <View
+                  style={{
+                    flex: 1,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    minWidth: 0,
+                    overflow: "hidden",
+                  }}
+                >
+                  <If when={!store.sidebarOpen()}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                      <Button
+                        testID="open-sidebar-btn"
+                        tooltip={t("navShowSidebar")}
+                        onPress={() => {
+                          animateLayout("ease");
+                          store.sidebarOpen.set(true);
+                        }}
+                        class="p-2 rounded-lg"
+                        style={BUTTON_MOTION_STYLE}
+                        hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+                        activeStyle={BUTTON_ACTIVE_STYLE}
+                      >
+                        <SidebarIcon size={17} colorToken="muted-foreground" />
+                      </Button>
+                      <Button
+                        testID="header-new-chat-btn"
+                        tooltip={t("navNewChat")}
+                        onPress={() => {
+                          animateLayout("ease");
+                          void store.createConversation();
+                        }}
+                        class="p-2 rounded-lg"
+                        style={BUTTON_MOTION_STYLE}
+                        hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+                        activeStyle={BUTTON_ACTIVE_STYLE}
+                      >
+                        <NewChatIcon size={17} colorToken="muted-foreground" />
+                      </Button>
+                    </View>
+                  </If>
+
+                  <Button
+                    testID="avatar-settings-btn"
+                    tooltip={t("sidebarProfileHint")}
+                    onPress={() => openSettingsSection("general")}
+                    class="p-0.5 rounded-full"
+                    style={[
+                      BUTTON_MOTION_STYLE,
+                      { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 },
+                    ]}
+                    hoverStyle={{ opacity: 0.88 }}
+                    activeStyle={BUTTON_ACTIVE_STYLE}
+                  >
                     <View
-                      testID="welcome-card"
-                      class="p-5 rounded-2xl border border-border bg-card"
-                      style={[
-                        CARD_ELEVATION_STYLE,
-                        {
-                          gap: 10,
-                          width: "100%",
-                          maxWidth: 560,
-                          minWidth: 0,
-                          overflow: "hidden",
-                        },
-                      ]}
+                      class="bg-primary"
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 14,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        position: "relative",
+                      }}
                     >
-                      <Text class="text-base font-semibold text-foreground">
-                        {t("welcomeTitle", { name: store.relationship().companionName })}
-                      </Text>
-                      <Text class="text-xs text-muted-foreground" style={{ lineHeight: 18 }}>
-                        {t("welcomeDesc")}
+                      <Text class="text-xs font-bold text-primary-foreground">
+                        {companionInitial()}
                       </Text>
                       <View
+                        class={
+                          isCompanionBusy()
+                            ? "bg-amber-400"
+                            : store.connected()
+                              ? "bg-emerald-400"
+                              : "bg-muted-foreground"
+                        }
                         style={{
-                          flexDirection: "column",
-                          alignItems: "flex-start",
-                          gap: 6,
-                          marginTop: 4,
+                          width: 9,
+                          height: 9,
+                          borderRadius: 5,
+                          position: "absolute",
+                          right: -1,
+                          bottom: -1,
+                          borderWidth: 1.5,
+                          borderColor: "#212121",
+                        }}
+                      />
+                    </View>
+                  </Button>
+
+                  <View
+                    style={{
+                      flex: 1,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 6,
+                      minWidth: 0,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <Text testID="companion-name" class="text-sm font-semibold text-foreground truncate">
+                      {store.relationship().companionName}
+                    </Text>
+                    <Text class="text-xs text-muted-foreground truncate">
+                      {t("headerForUser", { user: store.relationship().userName })}
+                    </Text>
+                    <View
+                      class="px-2 py-0.5 rounded-md bg-secondary border border-border"
+                      style={{ flexShrink: 1, minWidth: 0, overflow: "hidden" }}
+                    >
+                      <Text class="text-[11px] text-muted-foreground truncate">
+                        {store.modelSettings().companionModel}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                  <If when={!(store.sidebarOpen() && store.drawerOpen())}>
+                    <Text class="text-xs text-muted-foreground">
+                      {t("turnsLabel", { count: turnCount() })}
+                    </Text>
+                  </If>
+                  <Button
+                    testID="status-pill"
+                    onPress={() => openSettingsSection("models")}
+                    class="px-2 py-1 rounded-full bg-secondary border border-border"
+                    style={[
+                      BUTTON_MOTION_STYLE,
+                      { flexDirection: "row", alignItems: "center", gap: 5 },
+                    ]}
+                    hoverStyle={{ opacity: 0.9 }}
+                    activeStyle={BUTTON_ACTIVE_STYLE}
+                  >
+                    <View
+                      class={store.connected() ? "bg-emerald-400" : "bg-amber-400"}
+                      style={{ width: 6, height: 6, borderRadius: 3 }}
+                    />
+                    <Text class="text-[11px] text-muted-foreground">
+                      {store.connected() ? t("statusConnected") : t("statusOffline")}
+                    </Text>
+                  </Button>
+
+                  <Button
+                    testID="toggle-drawer"
+                    tooltip={store.drawerOpen() ? t("navHideTasks") : t("navShowTasks")}
+                    onPress={() => {
+                      animateLayout("spring");
+                      store.drawerOpen.update((open) => !open);
+                    }}
+                    class={
+                      store.drawerOpen()
+                        ? "p-2 rounded-lg bg-secondary border border-border"
+                        : "p-2 rounded-lg"
+                    }
+                    style={[
+                      BUTTON_MOTION_STYLE,
+                      { flexDirection: "row", alignItems: "center", gap: 4 },
+                    ]}
+                    hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+                    activeStyle={BUTTON_ACTIVE_STYLE}
+                  >
+                    <TasksIcon
+                      size={17}
+                      colorToken={store.drawerOpen() ? "foreground" : "muted-foreground"}
+                    />
+                    <If when={activeTaskCount() > 0}>
+                      <View class="px-1.5 py-0.5 rounded-full bg-primary">
+                        <Text class="text-[10px] font-bold text-primary-foreground">
+                          {String(activeTaskCount())}
+                        </Text>
+                      </View>
+                    </If>
+                  </Button>
+                </View>
+              </View>
+
+              <If when={store.statusBanner()}>
+                {(banner) => (
+                  <View class="px-4 py-1.5 bg-card border-b border-border">
+                    <Text testID="status-banner" class="text-xs text-muted-foreground">
+                      {banner()}
+                    </Text>
+                  </View>
+                )}
+              </If>
+
+              <If when={findAttentionTask(store.tasks())}>
+                {(task) => (
+                  <View
+                    testID="attention-banner"
+                    class="px-4 py-2 bg-secondary border-b border-border"
+                    style={[
+                      attentionMotion.style,
+                      {
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                      },
+                    ]}
+                  >
+                    <Text
+                      class="text-xs font-medium text-foreground"
+                      style={{ flex: 1, minWidth: 0 }}
+                    >
+                      {describeAttentionTask(task())}
+                    </Text>
+                    <View style={{ flexDirection: "row", gap: 6 }}>
+                      <If when={task().state.kind === "awaiting_approval"}>
+                        <Button
+                          testID="banner-approve-btn"
+                          onPress={() => {
+                            const state = task().state;
+                            if (state.kind === "awaiting_approval") {
+                              animateLayout("ease");
+                              void store.decideApproval(state.approvalId, "approved");
+                            }
+                          }}
+                          class="px-3 py-1 rounded-md bg-primary"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs font-semibold text-primary-foreground">
+                            {t("btnApprove")}
+                          </Text>
+                        </Button>
+                        <Button
+                          testID="banner-deny-btn"
+                          onPress={() => {
+                            const state = task().state;
+                            if (state.kind === "awaiting_approval") {
+                              animateLayout("ease");
+                              void store.decideApproval(state.approvalId, "denied");
+                            }
+                          }}
+                          class="px-3 py-1 rounded-md bg-destructive"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs font-semibold text-foreground">
+                            {t("btnDeny")}
+                          </Text>
+                        </Button>
+                      </If>
+                      <If when={task().state.kind === "paused_for_user"}>
+                        <Button
+                          testID="banner-resume-btn"
+                          onPress={() => void store.resumeBrowserTask(task().id)}
+                          class="px-3 py-1 rounded-md bg-primary"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs font-semibold text-primary-foreground">
+                            {t("btnResumeBrowser")}
+                          </Text>
+                        </Button>
+                      </If>
+                    </View>
+                  </View>
+                )}
+              </If>
+
+              {/* Main chat scroll container */}
+              <Scroll
+                ref={(ref) => {
+                  chatScrollRef = ref;
+                }}
+                style={{ flex: 1, minWidth: 0 }}
+                contentStyle={{ paddingHorizontal: 20, paddingVertical: 18, alignItems: "center" }}
+              >
+                <View
+                  onLayout={(e) => {
+                    chatContentHeight = e.bounds.size.height;
+                  }}
+                  style={{
+                    width: "100%",
+                    maxWidth: 740,
+                    minWidth: 0,
+                    gap: 16,
+                  }}
+                >
+                  <If
+                    when={store.messages().length > 0}
+                    else={
+                      <View
+                        testID="welcome-card"
+                        style={{
+                          paddingTop: 32,
+                          paddingBottom: 16,
+                          alignItems: "center",
+                          gap: 12,
                           width: "100%",
                           minWidth: 0,
                         }}
                       >
-                        <Each of={getStarterPrompts()}>
-                          {(prompt) => (
-                            <Button
-                              onPress={() => void submitMessage(prompt())}
-                              class="px-3 py-1.5 rounded-lg bg-secondary border border-border"
-                              style={[
-                                BUTTON_MOTION_STYLE,
-                                { maxWidth: "100%", minWidth: 0, flexShrink: 1 },
-                              ]}
-                              hoverStyle={{ opacity: 0.9 }}
-                              activeStyle={BUTTON_ACTIVE_STYLE}
-                            >
-                              <Text
-                                class="text-xs text-secondary-foreground"
-                                style={{ flexShrink: 1, minWidth: 0, lineHeight: 17 }}
-                              >
-                                {prompt()}
-                              </Text>
-                            </Button>
-                          )}
-                        </Each>
-                      </View>
-                    </View>
-                  }
-                >
-                  <Each of={store.messages()}>
-                    {(msg) => (
-                      <ChatBubble
-                        message={msg}
-                        companionName={() => store.relationship().companionName}
-                        userName={() => store.relationship().userName}
-                        selectionMode={() => selectionMode()}
-                        selected={() => selectedIds().has(msg().id)}
-                        onToggleSelect={toggleSelected}
-                        onEnterSelection={enterSelection}
-                        onRecall={(id) => void store.recallMessage(id)}
-                        onDelete={(id) => void store.deleteMessages([id])}
-                        onCopy={(content) => void copyText(store, content)}
-                      />
-                    )}
-                  </Each>
-                </If>
-
-                <If when={store.streamingReply()}>
-                  {(partial) => (
-                    <View
-                      testID="streaming-bubble"
-                      class="self-start max-w-[78%] px-4 py-2.5 rounded-2xl bg-card border border-border"
-                      style={[CARD_ELEVATION_STYLE, { borderTopLeftRadius: 6, gap: 4 }]}
-                    >
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                         <View
-                          class="bg-primary"
+                          class="bg-secondary border border-border"
                           style={{
-                            width: 7,
-                            height: 7,
-                            borderRadius: 4,
-                            animationName: "pulse",
-                            animationDuration: 900,
-                            animationIterationCount: "infinite",
+                            width: 44,
+                            height: 44,
+                            borderRadius: 22,
+                            alignItems: "center",
+                            justifyContent: "center",
                           }}
-                        />
-                        <Text class="text-xs font-semibold text-muted-foreground">
-                          {t("typingLabel", { name: store.relationship().companionName })}
+                        >
+                          <Text class="text-base font-bold text-foreground">
+                            {companionInitial()}
+                          </Text>
+                        </View>
+                        <Text
+                          class="text-lg font-semibold text-foreground"
+                          style={{ textAlign: "center" }}
+                        >
+                          {t("welcomeTitle")}
                         </Text>
+                        <Text
+                          class="text-xs text-muted-foreground"
+                          style={{
+                            maxWidth: 500,
+                            lineHeight: 18,
+                            textAlign: "center",
+                          }}
+                        >
+                          {t("welcomeDesc")}
+                        </Text>
+                        <View
+                          style={{
+                            flexDirection: "column",
+                            alignItems: "center",
+                            gap: 6,
+                            marginTop: 6,
+                            width: "100%",
+                            maxWidth: 520,
+                            minWidth: 0,
+                          }}
+                        >
+                          <Each of={getStarterPrompts()}>
+                            {(prompt) => (
+                              <Button
+                                onPress={() => void submitMessage(prompt())}
+                                class="px-3.5 py-2 rounded-xl bg-secondary border border-border"
+                                style={[
+                                  BUTTON_MOTION_STYLE,
+                                  { maxWidth: "100%", minWidth: 0, flexShrink: 1 },
+                                ]}
+                                hoverStyle={{ opacity: 0.9 }}
+                                activeStyle={BUTTON_ACTIVE_STYLE}
+                              >
+                                <Text
+                                  class="text-xs text-foreground"
+                                  style={{ flexShrink: 1, minWidth: 0, lineHeight: 17 }}
+                                >
+                                  {prompt()}
+                                </Text>
+                              </Button>
+                            )}
+                          </Each>
+                        </View>
                       </View>
-                      <MarkdownContent content={partial} streaming />
-                    </View>
-                  )}
-                </If>
+                    }
+                  >
+                    <Each of={store.messages()}>
+                      {(msg) => (
+                        <ChatBubble
+                          message={msg}
+                          companionName={() => store.relationship().companionName}
+                          companionInitial={companionInitial}
+                          selectionMode={() => selectionMode()}
+                          selected={() => selectedIds().has(msg().id)}
+                          onToggleSelect={toggleSelected}
+                          onEnterSelection={enterSelection}
+                          onRecall={(id) => void store.recallMessage(id)}
+                          onDelete={(id) => void store.deleteMessages([id])}
+                          onCopy={(content) => void copyText(store, content)}
+                        />
+                      )}
+                    </Each>
+                  </If>
+
+                  <If when={store.streamingReply()}>
+                    {(partial) => (
+                      <View
+                        testID="streaming-bubble"
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "flex-start",
+                          gap: 12,
+                          width: "100%",
+                        }}
+                      >
+                        <View
+                          class="bg-card border border-border"
+                          style={{
+                            width: 26,
+                            height: 26,
+                            borderRadius: 13,
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                            marginTop: 2,
+                          }}
+                        >
+                          <Text class="text-[11px] font-bold text-foreground">
+                            {companionInitial()}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                            <View
+                              class="bg-foreground"
+                              style={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: 3,
+                                animationName: "pulse",
+                                animationDuration: 900,
+                                animationIterationCount: "infinite",
+                              }}
+                            />
+                            <Text class="text-[11px] text-muted-foreground">
+                              {t("typingLabel", { name: store.relationship().companionName })}
+                            </Text>
+                          </View>
+                          <MarkdownContent content={partial} streaming />
+                        </View>
+                      </View>
+                    )}
+                  </If>
+                </View>
               </Scroll>
 
-              <If
-                when={selectionMode()}
-                else={
-                  <View
-                    class="p-3 border-t border-border bg-card"
-                    style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              {/* Floating ChatGPT-style capsule composer or multi-select bar */}
+              <View style={{ paddingHorizontal: 20, paddingBottom: 14, paddingTop: 6, alignItems: "center" }}>
+                <View style={{ width: "100%", maxWidth: 740, minWidth: 0 }}>
+                  <If
+                    when={selectionMode()}
+                    else={
+                      <View
+                        class="px-3.5 py-2 rounded-3xl bg-secondary border border-border"
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <Input
+                          testID="chat-input"
+                          value={composerText()}
+                          placeholder={t("inputPlaceholder", {
+                            name: store.relationship().companionName,
+                          })}
+                          submitBehavior="submit"
+                          onChange={(e) => composerText.set(e.value)}
+                          onSubmit={() => void submitMessage()}
+                          class="flex-1 px-1.5 py-1.5 bg-secondary text-sm text-foreground"
+                          style={{ minWidth: 0 }}
+                        />
+                        <Button
+                          testID="send-btn"
+                          onPress={() => void submitMessage()}
+                          class="rounded-full bg-primary"
+                          style={[
+                            BUTTON_MOTION_STYLE,
+                            {
+                              width: 32,
+                              height: 32,
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
+                            },
+                          ]}
+                          hoverStyle={{ opacity: 0.9 }}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <SendArrowIcon size={16} colorToken="primary-foreground" />
+                        </Button>
+                      </View>
+                    }
                   >
-                    <Input
-                      testID="chat-input"
-                      value={composerText()}
-                      placeholder={t("inputPlaceholder", {
-                        name: store.relationship().companionName,
-                      })}
-                      submitBehavior="submit"
-                      onChange={(e) => composerText.set(e.value)}
-                      onSubmit={() => void submitMessage()}
-                      class="flex-1 px-3.5 py-2.5 rounded-xl border border-border bg-background text-sm text-foreground"
-                      style={{ minWidth: 0 }}
-                    />
-                    <Button
-                      testID="send-btn"
-                      onPress={() => void submitMessage()}
-                      class="px-4 py-2.5 rounded-xl bg-primary"
-                      style={BUTTON_MOTION_STYLE}
-                      hoverStyle={{ opacity: 0.92 }}
-                      activeStyle={BUTTON_ACTIVE_STYLE}
+                    <View
+                      testID="selection-toolbar"
+                      class="px-4 py-2.5 rounded-2xl border border-border bg-card"
+                      style={{
+                        flexDirection: "row",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
                     >
-                      <Text class="text-sm font-semibold text-primary-foreground">
-                        {t("btnSend")}
+                      <Text class="text-xs font-semibold text-foreground">
+                        {t("selectionCount", { count: selectedIds().size })}
                       </Text>
-                    </Button>
-                  </View>
-                }
-              >
-                <View
-                  testID="selection-toolbar"
-                  class="p-3 border-t border-border bg-card"
-                  style={{
-                    flexDirection: "row",
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
-                  }}
-                >
-                  <Text class="text-xs font-semibold text-foreground">
-                    {t("selectionCount", { count: selectedIds().size })}
-                  </Text>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                    <Button
-                      testID="select-all-btn"
-                      onPress={selectAllMessages}
-                      class="px-3 py-1.5 rounded-lg bg-secondary border border-border"
-                      style={BUTTON_MOTION_STYLE}
-                      activeStyle={BUTTON_ACTIVE_STYLE}
-                    >
-                      <Text class="text-xs text-secondary-foreground">{t("btnSelectAll")}</Text>
-                    </Button>
-                    <Button
-                      testID="copy-selected-btn"
-                      disabled={selectedIds().size === 0}
-                      onPress={() => void copySelectedMessages()}
-                      class="px-3 py-1.5 rounded-lg bg-secondary border border-border disabled:opacity-50"
-                      style={BUTTON_MOTION_STYLE}
-                      activeStyle={BUTTON_ACTIVE_STYLE}
-                    >
-                      <Text class="text-xs text-secondary-foreground">{t("btnCopySelected")}</Text>
-                    </Button>
-                    <Button
-                      testID="delete-selected-btn"
-                      disabled={selectedIds().size === 0}
-                      onPress={() => void deleteSelectedMessages()}
-                      class="px-3 py-1.5 rounded-lg bg-destructive disabled:opacity-50"
-                      style={BUTTON_MOTION_STYLE}
-                      activeStyle={BUTTON_ACTIVE_STYLE}
-                    >
-                      <Text class="text-xs font-semibold text-primary-foreground">
-                        {t("btnDeleteSelected", { count: selectedIds().size })}
-                      </Text>
-                    </Button>
-                    <Button
-                      testID="exit-selection-btn"
-                      onPress={exitSelection}
-                      class="px-3 py-1.5 rounded-lg bg-muted"
-                      style={BUTTON_MOTION_STYLE}
-                      activeStyle={BUTTON_ACTIVE_STYLE}
-                    >
-                      <Text class="text-xs text-muted-foreground">{t("btnCancel")}</Text>
-                    </Button>
-                  </View>
+                      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                        <Button
+                          testID="select-all-btn"
+                          onPress={selectAllMessages}
+                          class="px-3 py-1.5 rounded-lg bg-secondary border border-border"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs text-secondary-foreground">{t("btnSelectAll")}</Text>
+                        </Button>
+                        <Button
+                          testID="copy-selected-btn"
+                          disabled={selectedIds().size === 0}
+                          onPress={() => void copySelectedMessages()}
+                          class="px-3 py-1.5 rounded-lg bg-secondary border border-border disabled:opacity-50"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs text-secondary-foreground">
+                            {t("btnCopySelected")}
+                          </Text>
+                        </Button>
+                        <Button
+                          testID="delete-selected-btn"
+                          disabled={selectedIds().size === 0}
+                          onPress={() => void deleteSelectedMessages()}
+                          class="px-3 py-1.5 rounded-lg bg-destructive disabled:opacity-50"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs font-semibold text-foreground">
+                            {t("btnDeleteSelected", { count: selectedIds().size })}
+                          </Text>
+                        </Button>
+                        <Button
+                          testID="exit-selection-btn"
+                          onPress={exitSelection}
+                          class="px-3 py-1.5 rounded-lg bg-muted"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs text-muted-foreground">{t("btnCancel")}</Text>
+                        </Button>
+                      </View>
+                    </View>
+                  </If>
                 </View>
-              </If>
+              </View>
             </View>
 
             <If when={store.drawerOpen()}>

@@ -2,7 +2,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ModelProfile, TieredModelConfig } from "@live-for-llm/ai";
-import type { ModelSettingsSummary, ModelSettingsUpdate } from "@live-for-llm/protocol";
+import type {
+  HarnessSettings,
+  ModelSettingsSummary,
+  ModelSettingsUpdate,
+  TaskKind,
+} from "@live-for-llm/protocol";
 
 export interface DaemonConfig {
   readonly host: string;
@@ -12,6 +17,36 @@ export interface DaemonConfig {
   readonly markdownExportDir: string;
   readonly enableEmbeddings: boolean;
   readonly models: TieredModelConfig;
+  readonly harness: HarnessSettings;
+}
+
+export const DEFAULT_HARNESS_SETTINGS: HarnessSettings = {
+  defaultBackend: "builtin",
+};
+
+/** Maps configured harness backend + taskKind to a concrete registered TaskRunner id. */
+export function resolveConfiguredRunnerId(
+  harness: HarnessSettings,
+  taskKind: TaskKind,
+): string {
+  if (taskKind === "browser_research" || taskKind === "browser_post") {
+    return "builtin-agent";
+  }
+  switch (harness.defaultBackend) {
+    case "auto":
+    case "builtin":
+      return "builtin-agent";
+    case "codex":
+      return "codex-cli";
+    case "claude_code":
+      return "claude-cli";
+    case "pi":
+      return "pi-cli";
+    case "opencode":
+      return "opencode-cli";
+    case "custom":
+      return "custom-cli";
+  }
 }
 
 export function createDefaultDaemonConfig(overrides?: Partial<DaemonConfig>): DaemonConfig {
@@ -71,6 +106,7 @@ export function createDefaultDaemonConfig(overrides?: Partial<DaemonConfig>): Da
     markdownExportDir: overrides?.markdownExportDir ?? join(dataDir, "memories-md"),
     enableEmbeddings: overrides?.enableEmbeddings ?? false,
     models: overrides?.models ?? defaultModels,
+    harness: overrides?.harness ?? DEFAULT_HARNESS_SETTINGS,
   };
 }
 

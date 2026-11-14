@@ -5,9 +5,9 @@ import type { TaskRunContext, TaskRunOutcome, TaskRunner } from "./runner.ts";
 export interface ExternalCliRunnerOptions {
   readonly id: string;
   readonly label: string;
-  readonly command: string;
+  readonly command: string | ((ctx: TaskRunContext) => string);
   readonly buildArgs: (goal: string, ctx: TaskRunContext) => readonly string[];
-  readonly cwd?: string;
+  readonly cwd?: string | ((ctx: TaskRunContext) => string | undefined);
   readonly supportedKinds?: readonly TaskKind[];
 }
 
@@ -16,9 +16,9 @@ export class ExternalCliRunner implements TaskRunner {
   readonly id: string;
   readonly label: string;
   readonly supportedKinds: readonly TaskKind[];
-  private readonly command: string;
+  private readonly command: ExternalCliRunnerOptions["command"];
   private readonly buildArgs: ExternalCliRunnerOptions["buildArgs"];
-  private readonly cwd?: string;
+  private readonly cwd?: ExternalCliRunnerOptions["cwd"];
 
   constructor(options: ExternalCliRunnerOptions) {
     this.id = options.id;
@@ -38,9 +38,27 @@ export class ExternalCliRunner implements TaskRunner {
         return;
       }
 
-      const args = [...this.buildArgs(ctx.goal, ctx)];
-      const child = spawn(this.command, args, {
-        ...(this.cwd !== undefined ? { cwd: this.cwd } : {}),
+      let cmdName: string;
+      let args: string[];
+      let resolvedCwd: string | undefined;
+      try {
+        cmdName = typeof this.command === "function" ? this.command(ctx) : this.command;
+        args = [...this.buildArgs(ctx.goal, ctx)];
+        resolvedCwd = typeof this.cwd === "function" ? this.cwd(ctx) : this.cwd;
+      } catch (err) {
+        resolve({
+          kind: "failed",
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+      if (!cmdName.trim()) {
+        resolve({ kind: "failed", error: `No executable configured for ${this.label}` });
+        return;
+      }
+
+      const child = spawn(cmdName, args, {
+        ...(resolvedCwd !== undefined ? { cwd: resolvedCwd } : {}),
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -74,7 +92,7 @@ export class ExternalCliRunner implements TaskRunner {
 
       child.on("error", (err) => {
         ctx.signal.removeEventListener("abort", onAbort);
-        resolve({ kind: "failed", error: `Failed to spawn ${this.command}: ${err.message}` });
+        resolve({ kind: "failed", error: `Failed to spawn ${cmdName}: ${err.message}` });
       });
 
       child.on("close", (code) => {
@@ -93,7 +111,7 @@ export class ExternalCliRunner implements TaskRunner {
         }
         resolve({
           kind: "failed",
-          error: stderrLines.join("\n") || `${this.command} exited with code ${String(code)}`,
+          error: stderrLines.join("\n") || `${cmdName} exited with code ${String(code)}`,
         });
       });
     });

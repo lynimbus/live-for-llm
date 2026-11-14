@@ -2,8 +2,10 @@ import {
   type ChatMessage,
   type ClientCommand,
   type ConversationId,
+  type ConversationSummary,
   type DaemonEvent,
   DEFAULT_POLICY_CONFIG,
+  type HarnessSettings,
   type MemoryRecord,
   type ModelFetchRequest,
   type ModelFetchResult,
@@ -17,6 +19,7 @@ import {
 
 export interface DaemonStateSnapshot {
   readonly conversationId: ConversationId;
+  readonly conversations?: readonly ConversationSummary[];
   readonly messages: readonly ChatMessage[];
   readonly memories: readonly MemoryRecord[];
   readonly relationship: RelationshipState;
@@ -24,6 +27,7 @@ export interface DaemonStateSnapshot {
   readonly policy: PolicyConfig;
   readonly proactiveRules: readonly ProactiveRule[];
   readonly modelSettings?: ModelSettingsSummary;
+  readonly harnessSettings?: HarnessSettings;
 }
 
 export interface DaemonTransport {
@@ -193,14 +197,19 @@ export const DEFAULT_MODEL_SETTINGS: ModelSettingsSummary = {
   hasApiKey: false,
 };
 
+export const DEFAULT_HARNESS_SETTINGS: HarnessSettings = {
+  defaultBackend: "builtin",
+};
+
 export const EMPTY_SNAPSHOT: Omit<DaemonStateSnapshot, "conversationId"> = {
+  conversations: [],
   messages: [],
   memories: [],
   relationship: {
     companionName: "Livia",
     userName: "你",
     affinityScore: 0.5,
-    currentMood: "warm",
+    currentMood: "calm",
     insideJokes: [],
     anniversaries: [],
     updatedAt: "",
@@ -209,4 +218,5 @@ export const EMPTY_SNAPSHOT: Omit<DaemonStateSnapshot, "conversationId"> = {
   policy: DEFAULT_POLICY_CONFIG,
   proactiveRules: [],
   modelSettings: DEFAULT_MODEL_SETTINGS,
+  harnessSettings: DEFAULT_HARNESS_SETTINGS,
 };

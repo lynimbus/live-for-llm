@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   type ChatMessage,
   type ConversationId,
+  type ConversationSummary,
   DEFAULT_POLICY_CONFIG,
   type MemoryDraft,
   type MemoryId,
@@ -199,6 +200,13 @@ export class MemoryStore {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         policy_json TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
 
     const cols = this.db
@@ -213,6 +221,33 @@ export class MemoryStore {
     }
     if (!existing.has("recalled_by")) {
       this.db.exec("ALTER TABLE chat_messages ADD COLUMN recalled_by TEXT;");
+    }
+
+    // Backfill any pre-existing conversations from chat_messages.
+    const orphanConvs = this.db
+      .prepare(
+        `SELECT DISTINCT cm.conversation_id AS id,
+                MIN(cm.created_at) AS created_at,
+                MAX(cm.created_at) AS updated_at
+         FROM chat_messages cm
+         LEFT JOIN conversations c ON c.id = cm.conversation_id
+         WHERE c.id IS NULL
+         GROUP BY cm.conversation_id`,
+      )
+      .all() as unknown as Array<{ id: string; created_at: string; updated_at: string }>;
+    for (const row of orphanConvs) {
+      this.db
+        .prepare("INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
+        .run(row.id, "新对话", row.created_at, row.updated_at);
+    }
+    const convCount = this.db.prepare("SELECT COUNT(*) AS cnt FROM conversations").get() as unknown as {
+      cnt: number;
+    };
+    if (convCount.cnt === 0) {
+      const now = new Date().toISOString();
+      this.db
+        .prepare("INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
+        .run("conv_main", "新对话", now, now);
     }
   }
 
@@ -398,6 +433,31 @@ export class MemoryStore {
   appendChatMessage(message: ChatMessage): void {
     this.db
       .prepare(
+        "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+      )
+      .run(message.conversationId, "新对话", message.createdAt, message.createdAt);
+
+    if (message.role === "user" && !message.recalled && message.content.trim().length > 0) {
+      const conv = this.db
+        .prepare("SELECT title FROM conversations WHERE id = ?")
+        .get(message.conversationId) as unknown as { title: string } | undefined;
+      if (conv && (conv.title === "新对话" || conv.title === "New chat")) {
+        const firstLine = message.content.trim().split(/\r?\n/)[0]?.trim() ?? "";
+        if (firstLine) {
+          const autoTitle = firstLine.length > 28 ? `${firstLine.slice(0, 28)}…` : firstLine;
+          this.db
+            .prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
+            .run(autoTitle, message.createdAt, message.conversationId);
+        }
+      }
+    }
+
+    this.db
+      .prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
+      .run(message.createdAt, message.conversationId);
+
+    this.db
+      .prepare(
         `INSERT OR REPLACE INTO chat_messages (
           id, conversation_id, role, content, proactive, linked_task_id,
           recalled, recalled_at, recalled_by, created_at
@@ -415,6 +475,112 @@ export class MemoryStore {
         message.recalledBy ?? null,
         message.createdAt,
       );
+  }
+
+  getChatMessage(
+    conversationId: ConversationId,
+    messageId: ChatMessage["id"],
+  ): ChatMessage | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM chat_messages WHERE conversation_id = ? AND id = ?")
+      .get(conversationId, messageId) as unknown as
+      | {
+          id: string;
+          conversation_id: string;
+          role: "user" | "companion" | "system";
+          content: string;
+          proactive: number;
+          linked_task_id: string | null;
+          recalled: number;
+          recalled_at: string | null;
+          recalled_by: "user" | "companion" | null;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      id: parseMessageId(row.id),
+      conversationId: parseConversationId(row.conversation_id),
+      role: row.role,
+      content: row.content,
+      createdAt: row.created_at,
+      ...(row.proactive === 1 ? { proactive: true } : {}),
+      ...(row.linked_task_id !== null ? { linkedTaskId: parseTaskId(row.linked_task_id) } : {}),
+      ...(row.recalled === 1 ? { recalled: true } : {}),
+      ...(row.recalled_at !== null ? { recalledAt: row.recalled_at } : {}),
+      ...(row.recalled_by !== null ? { recalledBy: row.recalled_by } : {}),
+    };
+  }
+
+  createConversation(params?: {
+    readonly id?: ConversationId;
+    readonly title?: string;
+  }): ConversationSummary {
+    const id =
+      params?.id ?? parseConversationId(`conv_${randomUUID().replace(/-/g, "").slice(0, 12)}`);
+    const title = params?.title?.trim() || "新对话";
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO conversations (id, title, created_at, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+      )
+      .run(id, title, now, now);
+    return { id, title, createdAt: now, updatedAt: now };
+  }
+
+  renameConversation(
+    id: ConversationId,
+    title: string,
+  ): ConversationSummary | undefined {
+    const trimmed = title.trim();
+    if (!trimmed) return undefined;
+    const now = new Date().toISOString();
+    this.db
+      .prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
+      .run(trimmed, now, id);
+    return this.listConversations(100).find((c) => c.id === id);
+  }
+
+  deleteConversation(id: ConversationId): boolean {
+    this.db.prepare("DELETE FROM chat_messages WHERE conversation_id = ?").run(id);
+    const info = this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+    return Number(info.changes ?? 0) > 0;
+  }
+
+  listConversations(limit = 50): ConversationSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT c.id, c.title, c.created_at, c.updated_at,
+                (
+                  SELECT cm.content
+                  FROM chat_messages cm
+                  WHERE cm.conversation_id = c.id AND cm.recalled = 0 AND LENGTH(TRIM(cm.content)) > 0
+                  ORDER BY cm.created_at DESC
+                  LIMIT 1
+                ) AS last_preview
+         FROM conversations c
+         ORDER BY c.updated_at DESC
+         LIMIT ?`,
+      )
+      .all(limit) as unknown as Array<{
+      id: string;
+      title: string;
+      created_at: string;
+      updated_at: string;
+      last_preview: string | null;
+    }>;
+
+    return rows.map((row) => ({
+      id: parseConversationId(row.id),
+      title: row.title,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...(row.last_preview !== null && row.last_preview.trim()
+        ? { lastMessagePreview: row.last_preview.trim().slice(0, 60) }
+        : {}),
+    }));
   }
 
   recallChatMessage(

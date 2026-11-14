@@ -287,12 +287,25 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
 
     const chatMsgs = daemon.store.listChatMessages("conv_main" as never);
     assert.ok(chatMsgs.length >= 2);
-    const firstMsgId = chatMsgs[0]!.id;
+    const userMsg = chatMsgs.find((m) => m.role === "user");
+    const companionMsg = chatMsgs.find((m) => m.role === "companion");
+    assert.ok(userMsg && companionMsg);
+
+    await assert.rejects(
+      () =>
+        daemon.handleCommand({
+          kind: "chat.recall",
+          conversationId: "conv_main" as never,
+          messageId: companionMsg.id,
+        }),
+      /Only your own messages can be recalled/,
+    );
+
     ws.send(
       JSON.stringify({
         kind: "chat.recall",
         conversationId: "conv_main",
-        messageId: firstMsgId,
+        messageId: userMsg.id,
       }),
     );
     const recallDeadline = Date.now() + 2000;
@@ -303,6 +316,18 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
       await new Promise((r) => setTimeout(r, 20));
     }
     assert.ok(daemon.store.listChatMessages("conv_main" as never)[0]?.recalled);
+
+    await daemon.handleCommand({
+      kind: "conversation.create",
+      conversationId: "conv_side" as never,
+      title: "副会话",
+    });
+    await daemon.handleCommand({
+      kind: "harness.update",
+      settings: { defaultBackend: "codex", workingDir: "/tmp" },
+    });
+    assert.equal(daemon.config.harness.defaultBackend, "codex");
+    assert.ok(daemon.store.listConversations().some((c) => c.id === "conv_side"));
 
     ws.close();
   } finally {

@@ -1,4 +1,6 @@
 import {
+  HARNESS_BACKENDS,
+  type HarnessBackend,
   LLM_PROVIDER_KINDS,
   type LlmProviderKind,
   MEMORY_KINDS,
@@ -9,11 +11,11 @@ import {
 import { effect, Scroll, signal, Text, View } from "nsh";
 import { Button, Input } from "nsh/base";
 import { currentLocale, setLocale, t } from "./i18n.ts";
+import { CloseIcon } from "./icons.tsx";
 import {
   animateLayout,
   BUTTON_ACTIVE_STYLE,
   BUTTON_MOTION_STYLE,
-  CARD_ELEVATION_STYLE,
   createEnterMotion,
 } from "./motion.ts";
 import type { CompanionUiStore, SettingsSection } from "./state.ts";
@@ -44,8 +46,29 @@ function getMemoryKindLabel(kind: MemoryKind): string {
   }
 }
 
+function getHarnessBackendLabel(backend: HarnessBackend): string {
+  switch (backend) {
+    case "auto":
+      return t("harnessBackendAuto");
+    case "builtin":
+      return t("harnessBackendBuiltin");
+    case "codex":
+      return t("harnessBackendCodex");
+    case "claude_code":
+      return t("harnessBackendClaude");
+    case "pi":
+      return t("harnessBackendPi");
+    case "opencode":
+      return t("harnessBackendOpenCode");
+    case "custom":
+      return t("harnessBackendCustom");
+  }
+}
+
 function getPolicyLabel(mode: TrustPolicyMode): string {
   switch (mode) {
+    case "yolo":
+      return t("policyYolo");
     case "trust_auto":
       return t("policyTrustAuto");
     case "confirm_external":
@@ -58,6 +81,10 @@ function getPolicyLabel(mode: TrustPolicyMode): string {
 function getPolicyDescription(mode: TrustPolicyMode): string {
   const isZh = currentLocale() === "zh-CN";
   switch (mode) {
+    case "yolo":
+      return isZh
+        ? "YOLO 模式：直接跳过全部工具、命令和网页发布确认（Codex / Claude Code 也会自动附带免确认参数）。"
+        : "YOLO mode: auto-approves all local files, shell commands, and external actions without prompts (also passes bypass flags to Codex / Claude Code).";
     case "trust_auto":
       return isZh
         ? "常规任务与网页操作自动执行，仅高危破坏性指令暂停确认。"
@@ -73,7 +100,7 @@ function getPolicyDescription(mode: TrustPolicyMode): string {
   }
 }
 
-/** Dedicated full-width Settings & Memories page separated from chat and task sidebar. */
+/** ChatGPT-style secondary Settings page with left category navigation and clean content pane. */
 export function SettingsPage(props: SettingsPageProps) {
   const { store } = props;
   const pageMotion = createEnterMotion("fadeInUp", 180);
@@ -96,6 +123,12 @@ export function SettingsPage(props: SettingsPageProps) {
   const memoryModel = signal(store.modelSettings().memoryModel);
   const modelsDirty = signal(false);
 
+  const harnessBackend = signal<HarnessBackend>(store.harnessSettings().defaultBackend);
+  const harnessWorkdir = signal(store.harnessSettings().workingDir ?? "");
+  const harnessCustomCmd = signal(store.harnessSettings().customCommand ?? "");
+  const harnessCustomArgs = signal(store.harnessSettings().customArgs ?? "");
+  const harnessDirty = signal(false);
+
   const assignRole = signal<AssignRole>("chat");
   const modelSearch = signal("");
 
@@ -115,6 +148,16 @@ export function SettingsPage(props: SettingsPageProps) {
       chatModel.set(cfg.companionModel);
       taskModel.set(cfg.taskModel);
       memoryModel.set(cfg.memoryModel);
+    }
+  });
+
+  effect(() => {
+    const cfg = store.harnessSettings();
+    if (!harnessDirty()) {
+      harnessBackend.set(cfg.defaultBackend);
+      harnessWorkdir.set(cfg.workingDir ?? "");
+      harnessCustomCmd.set(cfg.customCommand ?? "");
+      harnessCustomArgs.set(cfg.customArgs ?? "");
     }
   });
 
@@ -237,9 +280,56 @@ export function SettingsPage(props: SettingsPageProps) {
     }
   }
 
+  async function saveHarnessSettings() {
+    const workdir = harnessWorkdir().trim();
+    const customCommand = harnessCustomCmd().trim();
+    const customArgs = harnessCustomArgs().trim();
+    const ok = await store.updateHarnessSettings({
+      defaultBackend: harnessBackend(),
+      ...(workdir ? { workingDir: workdir } : {}),
+      ...(customCommand ? { customCommand } : {}),
+      ...(customArgs ? { customArgs } : {}),
+    });
+    if (ok) {
+      harnessDirty.set(false);
+    }
+  }
+
   const switchSection = (section: SettingsSection) => {
     animateLayout("ease");
     store.settingsSection.set(section);
+  };
+
+  const NavItem = (navProps: {
+    readonly section: SettingsSection;
+    readonly testID: string;
+    readonly label: () => string;
+  }) => {
+    const active = () => store.settingsSection() === navProps.section;
+    return (
+      <Button
+        testID={navProps.testID}
+        selected={active()}
+        onPress={() => switchSection(navProps.section)}
+        class={active() ? "px-3 py-2 rounded-lg bg-secondary" : "px-3 py-2 rounded-lg"}
+        style={[
+          BUTTON_MOTION_STYLE,
+          { alignItems: "flex-start", justifyContent: "center", width: "100%" },
+        ]}
+        hoverStyle={{ backgroundColor: "rgba(255,255,255,0.05)" }}
+        activeStyle={BUTTON_ACTIVE_STYLE}
+      >
+        <Text
+          class={
+            active()
+              ? "text-xs font-semibold text-foreground"
+              : "text-xs font-medium text-muted-foreground"
+          }
+        >
+          {navProps.label()}
+        </Text>
+      </Button>
+    );
   };
 
   return (
@@ -252,496 +342,581 @@ export function SettingsPage(props: SettingsPageProps) {
         class="px-5 py-3 border-b border-border bg-card"
         style={{
           flexDirection: "row",
-          flexWrap: "wrap",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 10,
+          gap: 12,
         }}
       >
         <View style={{ gap: 2 }}>
           <Text class="text-base font-semibold text-foreground">{t("settingsTitle")}</Text>
           <Text class="text-xs text-muted-foreground">{t("settingsSubtitle")}</Text>
         </View>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-          <SelectablePill
-            testID="settings-tab-models"
-            label={() => t("settingsTabModels")}
-            selected={() => store.settingsSection() === "models"}
-            onPress={() => switchSection("models")}
-          />
-          <SelectablePill
-            testID="settings-tab-memories"
-            label={() => t("settingsTabMemories")}
-            selected={() => store.settingsSection() === "memories"}
-            onPress={() => switchSection("memories")}
-          />
-          <SelectablePill
-            testID="settings-tab-general"
-            label={() => t("settingsTabGeneral")}
-            selected={() => store.settingsSection() === "general"}
-            onPress={() => switchSection("general")}
-          />
-        </View>
+        <Button
+          testID="close-settings-btn"
+          tooltip={t("btnClose")}
+          onPress={() => {
+            animateLayout("ease");
+            store.activePage.set("chat");
+          }}
+          class="p-2 rounded-lg bg-secondary border border-border"
+          style={BUTTON_MOTION_STYLE}
+          hoverStyle={{ opacity: 0.9 }}
+          activeStyle={BUTTON_ACTIVE_STYLE}
+        >
+          <CloseIcon size={16} colorToken="foreground" />
+        </Button>
       </View>
 
-      <Scroll
-        style={{ flex: 1, minWidth: 0 }}
-        contentStyle={{ padding: 20, gap: 14, alignItems: "center" }}
-      >
-        <View style={{ width: "100%", maxWidth: 780, gap: 14, minWidth: 0 }}>
-          <If when={store.settingsSection() === "models"}>
-            <View
-              class="p-4 rounded-2xl border border-border bg-card"
-              style={[CARD_ELEVATION_STYLE, { gap: 10 }]}
-            >
-              <View
-                style={{
-                  flexDirection: "row",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  flexWrap: "wrap",
-                  gap: 8,
-                }}
-              >
+      <View style={{ flex: 1, flexDirection: "row", minWidth: 0, overflow: "hidden" }}>
+        <View
+          class="bg-card border-r border-border"
+          style={{
+            width: 176,
+            minWidth: 148,
+            padding: 12,
+            gap: 4,
+          }}
+        >
+          <NavItem
+            section="general"
+            testID="settings-tab-general"
+            label={() => t("settingsTabGeneral")}
+          />
+          <NavItem
+            section="models"
+            testID="settings-tab-models"
+            label={() => t("settingsTabModels")}
+          />
+          <NavItem
+            section="harness"
+            testID="settings-tab-harness"
+            label={() => t("settingsTabHarness")}
+          />
+          <NavItem
+            section="memories"
+            testID="settings-tab-memories"
+            label={() => t("settingsTabMemories")}
+          />
+        </View>
+
+        <Scroll
+          style={{ flex: 1, minWidth: 0 }}
+          contentStyle={{ padding: 24, gap: 16, alignItems: "center" }}
+        >
+          <View style={{ width: "100%", maxWidth: 680, gap: 16, minWidth: 0 }}>
+            <If when={store.settingsSection() === "general"}>
+              <View class="p-4 rounded-xl border border-border bg-card" style={{ gap: 12 }}>
                 <Text class="text-sm font-semibold text-foreground">
-                  {t("apiSectionTitle")}
+                  {t("languageSectionTitle")}
                 </Text>
-                <Text class="text-xs text-muted-foreground">
-                  {store.modelSettings().hasApiKey
-                    ? t("apiKeyConfigured", {
-                        masked: store.modelSettings().apiKeyMasked ?? "configured",
-                      })
-                    : t("apiKeyUnset")}
-                </Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                  <SelectablePill
+                    testID="lang-zh"
+                    label={t("languageZh")}
+                    selected={() => currentLocale() === "zh-CN"}
+                    onPress={() => setLocale("zh-CN")}
+                  />
+                  <SelectablePill
+                    testID="lang-en"
+                    label={t("languageEn")}
+                    selected={() => currentLocale() === "en-US"}
+                    onPress={() => setLocale("en-US")}
+                  />
+                </View>
               </View>
 
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                <Each of={LLM_PROVIDER_KINDS}>
-                  {(provider) => {
-                    const typed = (): LlmProviderKind => provider();
-                    return (
-                      <SelectablePill
-                        testID={`provider-${typed()}`}
-                        label={PROVIDER_LABELS[typed()]}
-                        compact
-                        selected={() => apiProvider() === typed()}
-                        onPress={() => {
-                          modelsDirty.set(true);
-                          apiProvider.set(typed());
-                        }}
-                      />
-                    );
-                  }}
-                </Each>
-              </View>
-
-              <Input
-                testID="api-base-url-input"
-                value={apiBaseUrl()}
-                placeholder={t("apiBaseUrlPlaceholder")}
-                onChange={(e) => {
-                  modelsDirty.set(true);
-                  apiBaseUrl.set(e.value);
-                }}
-                class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
-              />
-
-              <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-                <Input
-                  testID="api-key-input"
-                  value={apiKey()}
-                  placeholder={t("apiKeyPlaceholder")}
-                  onChange={(e) => apiKey.set(e.value)}
-                  class="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
-                  style={{ minWidth: 0 }}
-                />
+              <View class="p-4 rounded-xl border border-border bg-card" style={{ gap: 12 }}>
+                <Text class="text-sm font-semibold text-foreground">
+                  {t("profileSectionTitle")}
+                </Text>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <Input
+                    testID="persona-companion-input"
+                    value={personaName()}
+                    placeholder={t("companionNamePlaceholder")}
+                    onChange={(e) => {
+                      personaDirty.set(true);
+                      personaName.set(e.value);
+                    }}
+                    class="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                    style={{ minWidth: 0 }}
+                  />
+                  <Input
+                    testID="persona-user-input"
+                    value={userName()}
+                    placeholder={t("userNamePlaceholder")}
+                    onChange={(e) => {
+                      personaDirty.set(true);
+                      userName.set(e.value);
+                    }}
+                    class="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                    style={{ minWidth: 0 }}
+                  />
+                </View>
                 <Button
-                  testID="fetch-models-btn"
-                  disabled={store.fetchingModels()}
-                  onPress={() => void handleFetchModels()}
-                  class="px-3.5 py-2 rounded-lg bg-secondary border border-border disabled:opacity-60"
+                  testID="save-persona-btn"
+                  onPress={() => void savePersonaSettings()}
+                  class="self-start px-4 py-2 rounded-lg bg-primary"
                   style={BUTTON_MOTION_STYLE}
-                  hoverStyle={{ opacity: 0.9 }}
                   activeStyle={BUTTON_ACTIVE_STYLE}
                 >
-                  <Text class="text-xs font-semibold text-secondary-foreground">
-                    {store.fetchingModels() ? t("btnFetchingModels") : t("btnFetchModels")}
+                  <Text class="text-xs font-semibold text-primary-foreground">
+                    {t("btnSaveProfile")}
+                  </Text>
+                </Button>
+              </View>
+            </If>
+
+            <If when={store.settingsSection() === "models"}>
+              <View class="p-4 rounded-xl border border-border bg-card" style={{ gap: 12 }}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
+                >
+                  <Text class="text-sm font-semibold text-foreground">
+                    {t("apiSectionTitle")}
+                  </Text>
+                  <Text class="text-xs text-muted-foreground">
+                    {store.modelSettings().hasApiKey
+                      ? t("apiKeyConfigured", {
+                          masked: store.modelSettings().apiKeyMasked ?? "configured",
+                        })
+                      : t("apiKeyUnset")}
+                  </Text>
+                </View>
+
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <Each of={LLM_PROVIDER_KINDS}>
+                    {(provider) => {
+                      const typed = (): LlmProviderKind => provider();
+                      return (
+                        <SelectablePill
+                          testID={`provider-${typed()}`}
+                          label={PROVIDER_LABELS[typed()]}
+                          compact
+                          selected={() => apiProvider() === typed()}
+                          onPress={() => {
+                            modelsDirty.set(true);
+                            apiProvider.set(typed());
+                          }}
+                        />
+                      );
+                    }}
+                  </Each>
+                </View>
+
+                <Input
+                  testID="api-base-url-input"
+                  value={apiBaseUrl()}
+                  placeholder={t("apiBaseUrlPlaceholder")}
+                  onChange={(e) => {
+                    modelsDirty.set(true);
+                    apiBaseUrl.set(e.value);
+                  }}
+                  class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                />
+
+                <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                  <Input
+                    testID="api-key-input"
+                    value={apiKey()}
+                    placeholder={t("apiKeyPlaceholder")}
+                    onChange={(e) => apiKey.set(e.value)}
+                    class="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                    style={{ minWidth: 0 }}
+                  />
+                  <Button
+                    testID="fetch-models-btn"
+                    disabled={store.fetchingModels()}
+                    onPress={() => void handleFetchModels()}
+                    class="px-3.5 py-2 rounded-lg bg-secondary border border-border disabled:opacity-60"
+                    style={BUTTON_MOTION_STYLE}
+                    hoverStyle={{ opacity: 0.9 }}
+                    activeStyle={BUTTON_ACTIVE_STYLE}
+                  >
+                    <Text class="text-xs font-semibold text-secondary-foreground">
+                      {store.fetchingModels() ? t("btnFetchingModels") : t("btnFetchModels")}
+                    </Text>
+                  </Button>
+                </View>
+
+                <If when={store.fetchedModels().length > 0}>
+                  <View
+                    testID="fetched-models-panel"
+                    class="p-3 rounded-xl border border-border bg-background"
+                    style={{ gap: 8 }}
+                  >
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <Text class="text-xs font-medium text-muted-foreground">
+                        {t("applyToRoleLabel")}
+                      </Text>
+                      <View style={{ flexDirection: "row", gap: 4 }}>
+                        <SelectablePill
+                          testID="assign-role-chat"
+                          label={() => t("roleChat")}
+                          compact
+                          selected={() => assignRole() === "chat"}
+                          onPress={() => assignRole.set("chat")}
+                        />
+                        <SelectablePill
+                          testID="assign-role-task"
+                          label={() => t("roleTask")}
+                          compact
+                          selected={() => assignRole() === "task"}
+                          onPress={() => assignRole.set("task")}
+                        />
+                        <SelectablePill
+                          testID="assign-role-memory"
+                          label={() => t("roleMemory")}
+                          compact
+                          selected={() => assignRole() === "memory"}
+                          onPress={() => assignRole.set("memory")}
+                        />
+                      </View>
+                    </View>
+
+                    <Input
+                      testID="model-filter-input"
+                      value={modelSearch()}
+                      placeholder={t("modelFilterPlaceholder")}
+                      onChange={(e) => modelSearch.set(e.value)}
+                      class="px-2.5 py-1.5 rounded-md border border-border bg-card text-xs text-foreground"
+                    />
+
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                      <Each of={filteredModels()}>
+                        {(modelId) => (
+                          <SelectablePill
+                            testID={`fetched-model-${modelId()}`}
+                            label={modelId()}
+                            compact
+                            selected={() => isModelSelectedForRole(modelId())}
+                            onPress={() => applyFetchedModel(modelId())}
+                          />
+                        )}
+                      </Each>
+                    </View>
+                  </View>
+                </If>
+
+                <View style={{ gap: 6 }}>
+                  <Text class="text-xs text-muted-foreground">{t("chatModelLabel")}</Text>
+                  <Input
+                    testID="chat-model-input"
+                    value={chatModel()}
+                    placeholder={t("chatModelLabel")}
+                    onChange={(e) => {
+                      modelsDirty.set(true);
+                      chatModel.set(e.value);
+                    }}
+                    class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                  />
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                    <Text class="text-xs text-muted-foreground">{t("taskModelLabel")}</Text>
+                    <Input
+                      testID="task-model-input"
+                      value={taskModel()}
+                      placeholder={t("taskModelLabel")}
+                      onChange={(e) => {
+                        modelsDirty.set(true);
+                        taskModel.set(e.value);
+                      }}
+                      class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                    />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                    <Text class="text-xs text-muted-foreground">{t("memoryModelLabel")}</Text>
+                    <Input
+                      testID="memory-model-input"
+                      value={memoryModel()}
+                      placeholder={t("memoryModelLabel")}
+                      onChange={(e) => {
+                        modelsDirty.set(true);
+                        memoryModel.set(e.value);
+                      }}
+                      class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                    />
+                  </View>
+                </View>
+
+                <Button
+                  testID="save-models-btn"
+                  onPress={() => void saveModelSettings()}
+                  class="self-start px-4 py-2 rounded-lg bg-primary"
+                  style={[BUTTON_MOTION_STYLE, { marginTop: 4 }]}
+                  activeStyle={BUTTON_ACTIVE_STYLE}
+                >
+                  <Text class="text-xs font-semibold text-primary-foreground">
+                    {t("btnSaveModels")}
+                  </Text>
+                </Button>
+              </View>
+            </If>
+
+            <If when={store.settingsSection() === "harness"}>
+              <View class="p-4 rounded-xl border border-border bg-card" style={{ gap: 12 }}>
+                <Text class="text-sm font-semibold text-foreground">
+                  {t("harnessBackendTitle")}
+                </Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <Each of={HARNESS_BACKENDS}>
+                    {(backend) => {
+                      const typed = (): HarnessBackend => backend();
+                      return (
+                        <SelectablePill
+                          testID={`harness-${typed()}`}
+                          label={() => getHarnessBackendLabel(typed())}
+                          selected={() => harnessBackend() === typed()}
+                          onPress={() => {
+                            harnessDirty.set(true);
+                            harnessBackend.set(typed());
+                          }}
+                        />
+                      );
+                    }}
+                  </Each>
+                </View>
+
+                <Input
+                  testID="harness-workdir-input"
+                  value={harnessWorkdir()}
+                  placeholder={t("harnessWorkdirPlaceholder")}
+                  onChange={(e) => {
+                    harnessDirty.set(true);
+                    harnessWorkdir.set(e.value);
+                  }}
+                  class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                />
+
+                <If when={harnessBackend() === "custom"}>
+                  <View style={{ gap: 8 }}>
+                    <Input
+                      testID="harness-custom-cmd-input"
+                      value={harnessCustomCmd()}
+                      placeholder={t("harnessCustomCmdPlaceholder")}
+                      onChange={(e) => {
+                        harnessDirty.set(true);
+                        harnessCustomCmd.set(e.value);
+                      }}
+                      class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                    />
+                    <Input
+                      testID="harness-custom-args-input"
+                      value={harnessCustomArgs()}
+                      placeholder={t("harnessCustomArgsPlaceholder")}
+                      onChange={(e) => {
+                        harnessDirty.set(true);
+                        harnessCustomArgs.set(e.value);
+                      }}
+                      class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
+                    />
+                  </View>
+                </If>
+
+                <Button
+                  testID="save-harness-btn"
+                  onPress={() => void saveHarnessSettings()}
+                  class="self-start px-4 py-2 rounded-lg bg-primary"
+                  style={BUTTON_MOTION_STYLE}
+                  activeStyle={BUTTON_ACTIVE_STYLE}
+                >
+                  <Text class="text-xs font-semibold text-primary-foreground">
+                    {t("btnSaveHarness")}
                   </Text>
                 </Button>
               </View>
 
-              <If when={store.fetchedModels().length > 0}>
-                <View
-                  testID="fetched-models-panel"
-                  class="p-3 rounded-xl border border-border bg-background"
-                  style={{ gap: 8 }}
-                >
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      flexWrap: "wrap",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 8,
-                    }}
-                  >
-                    <Text class="text-xs font-medium text-muted-foreground">
-                      {t("applyToRoleLabel")}
-                    </Text>
-                    <View style={{ flexDirection: "row", gap: 4 }}>
-                      <SelectablePill
-                        testID="assign-role-chat"
-                        label={() => t("roleChat")}
-                        compact
-                        selected={() => assignRole() === "chat"}
-                        onPress={() => assignRole.set("chat")}
-                      />
-                      <SelectablePill
-                        testID="assign-role-task"
-                        label={() => t("roleTask")}
-                        compact
-                        selected={() => assignRole() === "task"}
-                        onPress={() => assignRole.set("task")}
-                      />
-                      <SelectablePill
-                        testID="assign-role-memory"
-                        label={() => t("roleMemory")}
-                        compact
-                        selected={() => assignRole() === "memory"}
-                        onPress={() => assignRole.set("memory")}
-                      />
-                    </View>
-                  </View>
-
-                  <Input
-                    testID="model-filter-input"
-                    value={modelSearch()}
-                    placeholder={t("modelFilterPlaceholder")}
-                    onChange={(e) => modelSearch.set(e.value)}
-                    class="px-2.5 py-1.5 rounded-md border border-border bg-card text-xs text-foreground"
-                  />
-
-                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                    <Each of={filteredModels()}>
-                      {(modelId) => (
-                        <SelectablePill
-                          testID={`fetched-model-${modelId()}`}
-                          label={modelId()}
-                          compact
-                          selected={() => isModelSelectedForRole(modelId())}
-                          onPress={() => applyFetchedModel(modelId())}
-                        />
-                      )}
-                    </Each>
-                  </View>
-                </View>
-              </If>
-
-              <View style={{ gap: 6 }}>
-                <Text class="text-xs text-muted-foreground">{t("chatModelLabel")}</Text>
-                <Input
-                  testID="chat-model-input"
-                  value={chatModel()}
-                  placeholder={t("chatModelLabel")}
-                  onChange={(e) => {
-                    modelsDirty.set(true);
-                    chatModel.set(e.value);
-                  }}
-                  class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
-                />
-              </View>
-
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-                  <Text class="text-xs text-muted-foreground">{t("taskModelLabel")}</Text>
-                  <Input
-                    testID="task-model-input"
-                    value={taskModel()}
-                    placeholder={t("taskModelLabel")}
-                    onChange={(e) => {
-                      modelsDirty.set(true);
-                      taskModel.set(e.value);
-                    }}
-                    class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
-                  />
-                </View>
-                <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-                  <Text class="text-xs text-muted-foreground">{t("memoryModelLabel")}</Text>
-                  <Input
-                    testID="memory-model-input"
-                    value={memoryModel()}
-                    placeholder={t("memoryModelLabel")}
-                    onChange={(e) => {
-                      modelsDirty.set(true);
-                      memoryModel.set(e.value);
-                    }}
-                    class="px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
-                  />
-                </View>
-              </View>
-
-              <Button
-                testID="save-models-btn"
-                onPress={() => void saveModelSettings()}
-                class="self-start px-4 py-2 rounded-lg bg-primary"
-                style={[BUTTON_MOTION_STYLE, { marginTop: 4 }]}
-                activeStyle={BUTTON_ACTIVE_STYLE}
-              >
-                <Text class="text-xs font-semibold text-primary-foreground">
-                  {t("btnSaveModels")}
+              <View class="p-4 rounded-xl border border-border bg-card" style={{ gap: 12 }}>
+                <Text class="text-sm font-semibold text-foreground">
+                  {t("policySectionTitle")}
                 </Text>
-              </Button>
-            </View>
-          </If>
-
-          <If when={store.settingsSection() === "memories"}>
-            <View
-              class="p-4 rounded-2xl border border-border bg-card"
-              style={[CARD_ELEVATION_STYLE, { gap: 10 }]}
-            >
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                <SelectablePill
-                  testID="filter-all"
-                  label={() => t("memoryFilterAll")}
-                  compact
-                  selected={() => memoryFilter() === "all"}
-                  onPress={() => {
-                    animateLayout("ease");
-                    memoryFilter.set("all");
-                  }}
-                />
-                <Each of={MEMORY_KINDS}>
-                  {(kind) => (
-                    <SelectablePill
-                      testID={`filter-${kind()}`}
-                      label={() => getMemoryKindLabel(kind())}
-                      compact
-                      selected={() => memoryFilter() === kind()}
-                      onPress={() => {
-                        animateLayout("ease");
-                        memoryFilter.set(kind());
-                      }}
-                    />
-                  )}
-                </Each>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <Each of={TRUST_POLICY_MODES}>
+                    {(mode) => {
+                      const typedMode = (): TrustPolicyMode => mode();
+                      return (
+                        <SelectablePill
+                          testID={`policy-${typedMode()}`}
+                          label={() => getPolicyLabel(typedMode())}
+                          selected={() => store.policy().mode === typedMode()}
+                          onPress={() => void store.setPolicyMode(typedMode())}
+                        />
+                      );
+                    }}
+                  </Each>
+                </View>
+                <Text class="text-xs text-muted-foreground" style={{ lineHeight: 17 }}>
+                  {getPolicyDescription(store.policy().mode)}
+                </Text>
               </View>
+            </If>
 
-              <Input
-                testID="memory-search"
-                value={memorySearch()}
-                placeholder={t("memorySearchPlaceholder")}
-                onChange={(e) => memorySearch.set(e.value)}
-                class="px-3 py-2 rounded-lg border border-border bg-background text-sm text-foreground"
-              />
-
-              <View
-                class="p-3 rounded-xl border border-border bg-background"
-                style={{ gap: 8 }}
-              >
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+            <If when={store.settingsSection() === "memories"}>
+              <View class="p-4 rounded-xl border border-border bg-card" style={{ gap: 12 }}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <SelectablePill
+                    testID="filter-all"
+                    label={() => t("memoryFilterAll")}
+                    compact
+                    selected={() => memoryFilter() === "all"}
+                    onPress={() => {
+                      animateLayout("ease");
+                      memoryFilter.set("all");
+                    }}
+                  />
                   <Each of={MEMORY_KINDS}>
                     {(kind) => (
                       <SelectablePill
+                        testID={`filter-${kind()}`}
                         label={() => getMemoryKindLabel(kind())}
                         compact
-                        selected={() => newKind() === kind()}
-                        onPress={() => newKind.set(kind())}
+                        selected={() => memoryFilter() === kind()}
+                        onPress={() => {
+                          animateLayout("ease");
+                          memoryFilter.set(kind());
+                        }}
                       />
                     )}
                   </Each>
                 </View>
+
                 <Input
-                  testID="memory-new-title"
-                  value={newTitle()}
-                  placeholder={t("memoryTitlePlaceholder")}
-                  onChange={(e) => newTitle.set(e.value)}
-                  class="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground"
+                  testID="memory-search"
+                  value={memorySearch()}
+                  placeholder={t("memorySearchPlaceholder")}
+                  onChange={(e) => memorySearch.set(e.value)}
+                  class="px-3 py-2 rounded-lg border border-border bg-background text-sm text-foreground"
                 />
-                <Input
-                  testID="memory-new-content"
-                  value={newContent()}
-                  placeholder={t("memoryContentPlaceholder")}
-                  onChange={(e) => newContent.set(e.value)}
-                  class="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground"
-                />
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                  <Button
-                    testID="memory-add-btn"
-                    onPress={() => void submitNewMemory()}
-                    class="px-3 py-1.5 rounded-md bg-primary"
-                    style={BUTTON_MOTION_STYLE}
-                    activeStyle={BUTTON_ACTIVE_STYLE}
-                  >
-                    <Text class="text-xs font-semibold text-primary-foreground">
-                      {t("btnAddMemory")}
-                    </Text>
-                  </Button>
-                  <Button
-                    testID="memory-export-btn"
-                    onPress={() => void store.exportMarkdown()}
-                    class="px-3 py-1.5 rounded-md bg-secondary"
-                    style={BUTTON_MOTION_STYLE}
-                    activeStyle={BUTTON_ACTIVE_STYLE}
-                  >
-                    <Text class="text-xs font-medium text-secondary-foreground">
-                      {t("btnExportMd")}
-                    </Text>
-                  </Button>
-                  <Button
-                    testID="memory-import-btn"
-                    onPress={() => void store.importMarkdown()}
-                    class="px-3 py-1.5 rounded-md bg-secondary"
-                    style={BUTTON_MOTION_STYLE}
-                    activeStyle={BUTTON_ACTIVE_STYLE}
-                  >
-                    <Text class="text-xs font-medium text-secondary-foreground">
-                      {t("btnImportMd")}
-                    </Text>
-                  </Button>
+
+                <View
+                  class="p-3 rounded-xl border border-border bg-background"
+                  style={{ gap: 8 }}
+                >
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+                    <Each of={MEMORY_KINDS}>
+                      {(kind) => (
+                        <SelectablePill
+                          label={() => getMemoryKindLabel(kind())}
+                          compact
+                          selected={() => newKind() === kind()}
+                          onPress={() => newKind.set(kind())}
+                        />
+                      )}
+                    </Each>
+                  </View>
+                  <Input
+                    testID="memory-new-title"
+                    value={newTitle()}
+                    placeholder={t("memoryTitlePlaceholder")}
+                    onChange={(e) => newTitle.set(e.value)}
+                    class="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground"
+                  />
+                  <Input
+                    testID="memory-new-content"
+                    value={newContent()}
+                    placeholder={t("memoryContentPlaceholder")}
+                    onChange={(e) => newContent.set(e.value)}
+                    class="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground"
+                  />
+                  <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                    <Button
+                      testID="memory-add-btn"
+                      onPress={() => void submitNewMemory()}
+                      class="px-3 py-1.5 rounded-md bg-primary"
+                      style={BUTTON_MOTION_STYLE}
+                      activeStyle={BUTTON_ACTIVE_STYLE}
+                    >
+                      <Text class="text-xs font-semibold text-primary-foreground">
+                        {t("btnAddMemory")}
+                      </Text>
+                    </Button>
+                    <Button
+                      testID="memory-export-btn"
+                      onPress={() => void store.exportMarkdown()}
+                      class="px-3 py-1.5 rounded-md bg-secondary"
+                      style={BUTTON_MOTION_STYLE}
+                      activeStyle={BUTTON_ACTIVE_STYLE}
+                    >
+                      <Text class="text-xs font-medium text-secondary-foreground">
+                        {t("btnExportMd")}
+                      </Text>
+                    </Button>
+                    <Button
+                      testID="memory-import-btn"
+                      onPress={() => void store.importMarkdown()}
+                      class="px-3 py-1.5 rounded-md bg-secondary"
+                      style={BUTTON_MOTION_STYLE}
+                      activeStyle={BUTTON_ACTIVE_STYLE}
+                    >
+                      <Text class="text-xs font-medium text-secondary-foreground">
+                        {t("btnImportMd")}
+                      </Text>
+                    </Button>
+                  </View>
+                </View>
+
+                <View style={{ gap: 8 }}>
+                  <Each of={filteredMemories()}>
+                    {(mem) => (
+                      <View
+                        class="p-3 rounded-xl border border-border bg-background"
+                        style={{ gap: 4 }}
+                      >
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 8,
+                          }}
+                        >
+                          <Text
+                            class="text-sm font-medium text-foreground"
+                            style={{ flex: 1, minWidth: 0 }}
+                          >
+                            {`[${getMemoryKindLabel(mem().kind)}] ${mem().title}`}
+                          </Text>
+                          <Button
+                            testID={`delete-memory-${mem().id}`}
+                            onPress={() => {
+                              animateLayout("ease");
+                              void store.deleteMemory(mem().id);
+                            }}
+                            class="px-2.5 py-1 rounded bg-muted"
+                            style={BUTTON_MOTION_STYLE}
+                            activeStyle={BUTTON_ACTIVE_STYLE}
+                          >
+                            <Text class="text-xs text-muted-foreground">{t("btnDelete")}</Text>
+                          </Button>
+                        </View>
+                        <Text class="text-xs text-muted-foreground" style={{ lineHeight: 17 }}>
+                          {mem().content}
+                        </Text>
+                      </View>
+                    )}
+                  </Each>
                 </View>
               </View>
-
-              <View style={{ gap: 8 }}>
-                <Each of={filteredMemories()}>
-                  {(mem) => (
-                    <View
-                      class="p-3 rounded-xl border border-border bg-background"
-                      style={{ gap: 4 }}
-                    >
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 8,
-                        }}
-                      >
-                        <Text
-                          class="text-sm font-medium text-foreground"
-                          style={{ flex: 1, minWidth: 0 }}
-                        >
-                          {`[${getMemoryKindLabel(mem().kind)}] ${mem().title}`}
-                        </Text>
-                        <Button
-                          testID={`delete-memory-${mem().id}`}
-                          onPress={() => {
-                            animateLayout("ease");
-                            void store.deleteMemory(mem().id);
-                          }}
-                          class="px-2.5 py-1 rounded bg-muted"
-                          style={BUTTON_MOTION_STYLE}
-                          activeStyle={BUTTON_ACTIVE_STYLE}
-                        >
-                          <Text class="text-xs text-muted-foreground">{t("btnDelete")}</Text>
-                        </Button>
-                      </View>
-                      <Text class="text-xs text-muted-foreground" style={{ lineHeight: 17 }}>
-                        {mem().content}
-                      </Text>
-                    </View>
-                  )}
-                </Each>
-              </View>
-            </View>
-          </If>
-
-          <If when={store.settingsSection() === "general"}>
-            <View
-              class="p-4 rounded-2xl border border-border bg-card"
-              style={[CARD_ELEVATION_STYLE, { gap: 10 }]}
-            >
-              <Text class="text-sm font-semibold text-foreground">
-                {t("languageSectionTitle")}
-              </Text>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                <SelectablePill
-                  testID="lang-zh"
-                  label={t("languageZh")}
-                  selected={() => currentLocale() === "zh-CN"}
-                  onPress={() => setLocale("zh-CN")}
-                />
-                <SelectablePill
-                  testID="lang-en"
-                  label={t("languageEn")}
-                  selected={() => currentLocale() === "en-US"}
-                  onPress={() => setLocale("en-US")}
-                />
-              </View>
-            </View>
-
-            <View
-              class="p-4 rounded-2xl border border-border bg-card"
-              style={[CARD_ELEVATION_STYLE, { gap: 10 }]}
-            >
-              <Text class="text-sm font-semibold text-foreground">
-                {t("profileSectionTitle")}
-              </Text>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                <Input
-                  testID="persona-companion-input"
-                  value={personaName()}
-                  placeholder={t("companionNamePlaceholder")}
-                  onChange={(e) => {
-                    personaDirty.set(true);
-                    personaName.set(e.value);
-                  }}
-                  class="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
-                  style={{ minWidth: 0 }}
-                />
-                <Input
-                  testID="persona-user-input"
-                  value={userName()}
-                  placeholder={t("userNamePlaceholder")}
-                  onChange={(e) => {
-                    personaDirty.set(true);
-                    userName.set(e.value);
-                  }}
-                  class="flex-1 px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground"
-                  style={{ minWidth: 0 }}
-                />
-              </View>
-              <Button
-                testID="save-persona-btn"
-                onPress={() => void savePersonaSettings()}
-                class="self-start px-4 py-2 rounded-lg bg-secondary"
-                style={BUTTON_MOTION_STYLE}
-                activeStyle={BUTTON_ACTIVE_STYLE}
-              >
-                <Text class="text-xs font-semibold text-secondary-foreground">
-                  {t("btnSaveProfile")}
-                </Text>
-              </Button>
-            </View>
-
-            <View
-              class="p-4 rounded-2xl border border-border bg-card"
-              style={[CARD_ELEVATION_STYLE, { gap: 10 }]}
-            >
-              <Text class="text-sm font-semibold text-foreground">
-                {t("policySectionTitle")}
-              </Text>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                <Each of={TRUST_POLICY_MODES}>
-                  {(mode) => {
-                    const typedMode = (): TrustPolicyMode => mode();
-                    return (
-                      <SelectablePill
-                        testID={`policy-${typedMode()}`}
-                        label={() => getPolicyLabel(typedMode())}
-                        selected={() => store.policy().mode === typedMode()}
-                        onPress={() => void store.setPolicyMode(typedMode())}
-                      />
-                    );
-                  }}
-                </Each>
-              </View>
-              <Text class="text-xs text-muted-foreground" style={{ lineHeight: 17 }}>
-                {getPolicyDescription(store.policy().mode)}
-              </Text>
-            </View>
-          </If>
-        </View>
-      </Scroll>
+            </If>
+          </View>
+        </Scroll>
+      </View>
     </View>
   );
 }

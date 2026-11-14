@@ -22,6 +22,18 @@ test("branded id guard and parser accept safe ids and reject invalid input", () 
 test("evaluatePolicyDecision enforces trust_auto, confirm_external, and allowlist", () => {
   assert.equal(
     evaluatePolicyDecision({
+      policy: {
+        mode: "yolo",
+        autoApproveDomains: [],
+        alwaysConfirmTiers: ["destructive", "external_send"],
+      },
+      riskTier: "destructive",
+      domain: "mail.example.com",
+    }),
+    "allow",
+  );
+  assert.equal(
+    evaluatePolicyDecision({
       policy: DEFAULT_POLICY_CONFIG,
       riskTier: "external_send",
       domain: "x.com",
@@ -92,6 +104,22 @@ test("parseClientCommand parses valid commands and rejects malformed payloads", 
     /expected non-empty string/,
   );
   assert.throws(() => parseClientCommand({ kind: "unknown.cmd" }), /Invalid ClientCommand.kind/);
+
+  const convCreate = parseClientCommand({
+    kind: "conversation.create",
+    conversationId: "conv_new_1",
+    title: "测试会话",
+  });
+  assert.equal(convCreate.kind, "conversation.create");
+
+  const harnessUpdate = parseClientCommand({
+    kind: "harness.update",
+    settings: {
+      defaultBackend: "codex",
+      workingDir: "/tmp/work",
+    },
+  });
+  assert.equal(harnessUpdate.kind, "harness.update");
 });
 
 test("parseDaemonEvent and parseTaskRecord validate discriminated task states", () => {

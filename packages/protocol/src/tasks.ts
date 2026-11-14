@@ -27,7 +27,7 @@ export const ACTION_RISK_TIERS = [
 ] as const;
 export type ActionRiskTier = (typeof ACTION_RISK_TIERS)[number];
 
-export const TRUST_POLICY_MODES = ["trust_auto", "confirm_external", "allowlist"] as const;
+export const TRUST_POLICY_MODES = ["yolo", "trust_auto", "confirm_external", "allowlist"] as const;
 export type TrustPolicyMode = (typeof TRUST_POLICY_MODES)[number];
 
 export interface PolicyConfig {
@@ -113,6 +113,9 @@ export function evaluatePolicyDecision(params: {
   readonly riskTier: ActionRiskTier;
   readonly domain?: string;
 }): "allow" | "require_approval" {
+  if (params.policy.mode === "yolo") {
+    return "allow";
+  }
   if (params.policy.alwaysConfirmTiers.includes(params.riskTier)) {
     return "require_approval";
   }

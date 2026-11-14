@@ -46,8 +46,10 @@ async function ensureGuarded(params: {
 /** Builds non-browser local workspace & utility HarnessTools for BuiltinAgentRunner. */
 export function createUtilityTools(params: {
   readonly workspaceRoot: string;
+  readonly getWorkspaceRoot?: () => string;
   readonly getPolicy: () => PolicyConfig;
 }): HarnessTool[] {
+  const resolveRoot = () => params.getWorkspaceRoot?.().trim() || params.workspaceRoot;
   const timeTool: HarnessTool = {
     spec: {
       name: "get_current_time",
@@ -78,7 +80,7 @@ export function createUtilityTools(params: {
     },
     riskTier: "read_only",
     async execute(args) {
-      const target = resolveSafePath(params.workspaceRoot, args["path"]);
+      const target = resolveSafePath(resolveRoot(), args["path"]);
       const entries = await readdir(target, { withFileTypes: true });
       return JSON.stringify({
         path: target,
@@ -104,7 +106,7 @@ export function createUtilityTools(params: {
     },
     riskTier: "read_only",
     async execute(args) {
-      const target = resolveSafePath(params.workspaceRoot, args["path"]);
+      const target = resolveSafePath(resolveRoot(), args["path"]);
       const content = await readFile(target, "utf8");
       const maxChars = 32_000;
       return content.length > maxChars
@@ -127,8 +129,9 @@ export function createUtilityTools(params: {
       },
     },
     riskTier: "local_write",
+    handlesOwnPolicy: true,
     async execute(args, ctx) {
-      const target = resolveSafePath(params.workspaceRoot, args["path"]);
+      const target = resolveSafePath(resolveRoot(), args["path"]);
       const content = typeof args["content"] === "string" ? args["content"] : "";
       await ensureGuarded({
         policy: params.getPolicy(),
@@ -157,10 +160,11 @@ export function createUtilityTools(params: {
       },
     },
     riskTier: "destructive",
+    handlesOwnPolicy: true,
     async execute(args, ctx) {
       const command = typeof args["command"] === "string" ? args["command"].trim() : "";
       if (!command) throw new Error("run_shell_command requires command");
-      const cwd = resolveSafePath(params.workspaceRoot, args["cwd"]);
+      const cwd = resolveSafePath(resolveRoot(), args["cwd"]);
       await ensureGuarded({
         policy: params.getPolicy(),
         riskTier: "destructive",

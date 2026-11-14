@@ -54,6 +54,32 @@ export interface ChatMessage {
   readonly recalledBy?: "user" | "companion";
 }
 
+export interface ConversationSummary {
+  readonly id: ConversationId;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly lastMessagePreview?: string;
+}
+
+export const HARNESS_BACKENDS = [
+  "auto",
+  "builtin",
+  "codex",
+  "claude_code",
+  "pi",
+  "opencode",
+  "custom",
+] as const;
+export type HarnessBackend = (typeof HARNESS_BACKENDS)[number];
+
+export interface HarnessSettings {
+  readonly defaultBackend: HarnessBackend;
+  readonly customCommand?: string;
+  readonly customArgs?: string;
+  readonly workingDir?: string;
+}
+
 export interface ModelFetchRequest {
   readonly provider: LlmProviderKind;
   readonly baseUrl: string;
@@ -161,6 +187,24 @@ export type ClientCommand =
       readonly settings: ModelSettingsUpdate;
     }
   | {
+      readonly kind: "harness.update";
+      readonly settings: HarnessSettings;
+    }
+  | {
+      readonly kind: "conversation.create";
+      readonly conversationId?: ConversationId;
+      readonly title?: string;
+    }
+  | {
+      readonly kind: "conversation.rename";
+      readonly conversationId: ConversationId;
+      readonly title: string;
+    }
+  | {
+      readonly kind: "conversation.delete";
+      readonly conversationId: ConversationId;
+    }
+  | {
       readonly kind: "relationship.update";
       readonly patch: RelationshipUpdate;
     }
@@ -184,6 +228,10 @@ export type DaemonEvent =
       readonly kind: "chat.updated";
       readonly conversationId: ConversationId;
       readonly messages: readonly ChatMessage[];
+    }
+  | {
+      readonly kind: "conversations.updated";
+      readonly conversations: readonly ConversationSummary[];
     }
   | {
       readonly kind: "proactive.message";
@@ -218,6 +266,10 @@ export type DaemonEvent =
   | {
       readonly kind: "models.updated";
       readonly settings: ModelSettingsSummary;
+    }
+  | {
+      readonly kind: "harness.updated";
+      readonly settings: HarnessSettings;
     }
   | {
       readonly kind: "relationship.updated";
@@ -351,6 +403,36 @@ function parseModelSettingsSummary(raw: unknown): ModelSettingsSummary {
   };
 }
 
+function parseConversationSummary(raw: unknown): ConversationSummary {
+  const obj = expectObject(raw, "ConversationSummary");
+  const lastMessagePreview = expectOptionalString(
+    obj["lastMessagePreview"],
+    "ConversationSummary.lastMessagePreview",
+  );
+  return {
+    id: parseConversationId(obj["id"]),
+    title: expectNonEmptyString(obj["title"], "ConversationSummary.title"),
+    createdAt: expectString(obj["createdAt"], "ConversationSummary.createdAt"),
+    updatedAt: expectString(obj["updatedAt"], "ConversationSummary.updatedAt"),
+    ...(lastMessagePreview !== undefined ? { lastMessagePreview } : {}),
+  };
+}
+
+function parseHarnessSettings(raw: unknown): HarnessSettings {
+  const obj = expectObject(raw, "HarnessSettings");
+  const customCommand = expectOptionalString(obj["customCommand"], "HarnessSettings.customCommand");
+  const customArgs = expectOptionalString(obj["customArgs"], "HarnessSettings.customArgs");
+  const workingDir = expectOptionalString(obj["workingDir"], "HarnessSettings.workingDir");
+  return {
+    defaultBackend: expectEnum(obj["defaultBackend"], HARNESS_BACKENDS, "HarnessSettings.defaultBackend"),
+    ...(customCommand !== undefined && customCommand.trim()
+      ? { customCommand: customCommand.trim() }
+      : {}),
+    ...(customArgs !== undefined && customArgs.trim() ? { customArgs: customArgs.trim() } : {}),
+    ...(workingDir !== undefined && workingDir.trim() ? { workingDir: workingDir.trim() } : {}),
+  };
+}
+
 function parseRelationshipUpdate(raw: unknown): RelationshipUpdate {
   const obj = expectObject(raw, "RelationshipUpdate");
   const companionName = expectOptionalString(
@@ -451,6 +533,31 @@ export function parseClientCommand(raw: unknown): ClientCommand {
       return { kind: "schedule.upsert", rule: parseProactiveRule(obj["rule"]) };
     case "models.update":
       return { kind: "models.update", settings: parseModelSettingsUpdate(obj["settings"]) };
+    case "harness.update":
+      return { kind: "harness.update", settings: parseHarnessSettings(obj["settings"]) };
+    case "conversation.create": {
+      const conversationId =
+        obj["conversationId"] === undefined
+          ? undefined
+          : parseConversationId(obj["conversationId"]);
+      const title = expectOptionalString(obj["title"], "conversation.create.title");
+      return {
+        kind: "conversation.create",
+        ...(conversationId !== undefined ? { conversationId } : {}),
+        ...(title !== undefined && title.trim() ? { title: title.trim() } : {}),
+      };
+    }
+    case "conversation.rename":
+      return {
+        kind: "conversation.rename",
+        conversationId: parseConversationId(obj["conversationId"]),
+        title: expectNonEmptyString(obj["title"], "conversation.rename.title").trim(),
+      };
+    case "conversation.delete":
+      return {
+        kind: "conversation.delete",
+        conversationId: parseConversationId(obj["conversationId"]),
+      };
     case "relationship.update":
       return { kind: "relationship.update", patch: parseRelationshipUpdate(obj["patch"]) };
     case "ping":
@@ -482,6 +589,15 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent {
         kind: "chat.updated",
         conversationId: parseConversationId(obj["conversationId"]),
         messages: obj["messages"].map((item) => parseChatMessage(item)),
+      };
+    }
+    case "conversations.updated": {
+      if (!Array.isArray(obj["conversations"])) {
+        throw new Error("Invalid conversations.updated.conversations: expected array");
+      }
+      return {
+        kind: "conversations.updated",
+        conversations: obj["conversations"].map((item) => parseConversationSummary(item)),
       };
     }
     case "proactive.message":
@@ -546,6 +662,8 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent {
       return { kind: "policy.updated", policy: parsePolicyConfig(obj["policy"]) };
     case "models.updated":
       return { kind: "models.updated", settings: parseModelSettingsSummary(obj["settings"]) };
+    case "harness.updated":
+      return { kind: "harness.updated", settings: parseHarnessSettings(obj["settings"]) };
     case "relationship.updated":
       return {
         kind: "relationship.updated",

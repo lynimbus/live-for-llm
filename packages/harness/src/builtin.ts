@@ -1,11 +1,17 @@
 import type { ChatTurnMessage, ModelRouter, ToolSpec } from "@live-for-llm/ai";
-import type { ActionRiskTier, TaskKind } from "@live-for-llm/protocol";
+import {
+  type ActionRiskTier,
+  type PolicyConfig,
+  type TaskKind,
+  evaluatePolicyDecision,
+} from "@live-for-llm/protocol";
 import type { TaskRunContext, TaskRunOutcome, TaskRunner } from "./runner.ts";
 
 export interface HarnessTool {
   readonly spec: ToolSpec;
   readonly riskTier: ActionRiskTier;
   readonly domain?: string;
+  readonly handlesOwnPolicy?: boolean;
   execute(args: Record<string, unknown>, ctx: TaskRunContext): Promise<string>;
 }
 
@@ -17,6 +23,7 @@ export interface BuiltinAgentRunnerOptions {
   readonly maxTurns?: number;
   readonly systemPrompt?: string;
   readonly supportedKinds?: readonly TaskKind[];
+  readonly getPolicy?: () => PolicyConfig;
 }
 
 /** In-process tool-calling agent runner backed by ModelRouter. */
@@ -28,6 +35,7 @@ export class BuiltinAgentRunner implements TaskRunner {
   private readonly toolsByName: Map<string, HarnessTool>;
   private readonly maxTurns: number;
   private readonly systemPrompt: string;
+  private readonly getPolicy?: () => PolicyConfig;
 
   constructor(options: BuiltinAgentRunnerOptions) {
     this.id = options.id ?? "builtin-agent";
@@ -44,6 +52,9 @@ export class BuiltinAgentRunner implements TaskRunner {
     this.systemPrompt =
       options.systemPrompt ??
       "You are the background execution harness. Complete the assigned goal accurately using the available tools, then return a concise factual summary.";
+    if (options.getPolicy !== undefined) {
+      this.getPolicy = options.getPolicy;
+    }
   }
 
   async run(ctx: TaskRunContext): Promise<TaskRunOutcome> {
@@ -90,7 +101,17 @@ export class BuiltinAgentRunner implements TaskRunner {
           continue;
         }
 
-        if (tool.riskTier === "external_send" || tool.riskTier === "destructive") {
+        const needsApproval = tool.handlesOwnPolicy
+          ? false
+          : this.getPolicy
+            ? evaluatePolicyDecision({
+                policy: this.getPolicy(),
+                riskTier: tool.riskTier,
+                ...(tool.domain ? { domain: tool.domain } : {}),
+              }) === "require_approval"
+            : tool.riskTier === "external_send" || tool.riskTier === "destructive";
+
+        if (needsApproval) {
           const decision = await ctx.requestApproval({
             actionSummary: `Run tool ${call.name}`,
             riskTier: tool.riskTier,
