@@ -1,0 +1,31 @@
+{
+  "name": "@live-for-llm/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "live-for-llm-daemon": "./src/cli.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@live-for-llm/ai": "workspace:*",
+    "@live-for-llm/browser": "workspace:*",
+    "@live-for-llm/companion": "workspace:*",
+    "@live-for-llm/harness": "workspace:*",
+    "@live-for-llm/memory": "workspace:*",
+    "@live-for-llm/protocol": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.14"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.ts"
+  }
+}

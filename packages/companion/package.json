@@ -1,0 +1,23 @@
+{
+  "name": "@live-for-llm/companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@live-for-llm/ai": "workspace:*",
+    "@live-for-llm/browser": "workspace:*",
+    "@live-for-llm/harness": "workspace:*",
+    "@live-for-llm/memory": "workspace:*",
+    "@live-for-llm/protocol": "workspace:*"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.ts"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@live-for-llm/browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@live-for-llm/protocol": "workspace:*",
+    "playwright-core": "^1.52.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.ts"
+  }
+}
