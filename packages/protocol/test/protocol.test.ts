@@ -116,10 +116,14 @@ test("parseClientCommand parses valid commands and rejects malformed payloads", 
     kind: "harness.update",
     settings: {
       defaultBackend: "codex",
+      browserBackend: "follow_harness",
       workingDir: "/tmp/work",
     },
   });
   assert.equal(harnessUpdate.kind, "harness.update");
+  if (harnessUpdate.kind === "harness.update") {
+    assert.equal(harnessUpdate.settings.browserBackend, "follow_harness");
+  }
 });
 
 test("parseDaemonEvent and parseTaskRecord validate discriminated task states", () => {
@@ -128,7 +132,7 @@ test("parseDaemonEvent and parseTaskRecord validate discriminated task states", 
     conversationId: "conv_1",
     taskKind: "browser_post",
     title: "Post update",
-    runnerId: "browser-builtin",
+    runnerId: "browser-runner",
     browserProfileId: "prof_main",
     state: {
       kind: "awaiting_approval",
@@ -149,6 +153,20 @@ test("parseDaemonEvent and parseTaskRecord validate discriminated task states", 
     task,
   });
   assert.equal(event.kind, "task.updated");
+
+  const traceEvt = parseDaemonEvent({
+    kind: "task.trace",
+    entry: {
+      id: "trace_1",
+      taskId: "task_42",
+      seq: 1,
+      kind: "browser_action",
+      title: "Searched topic",
+      url: "https://example.com",
+      createdAt: "2026-11-15T05:30:00Z",
+    },
+  });
+  assert.equal(traceEvt.kind, "task.trace");
 
   assert.throws(
     () =>

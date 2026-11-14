@@ -151,3 +151,84 @@ test("ExternalCliRunner spawns child process, streams progress, and supports abo
   }
   assert.deepEqual(progress, ["step: starting", "done: fix bug"]);
 });
+
+test("BuiltinAgentRunner synthesizes collected tool evidence when maxTurns is reached", async () => {
+  let step = 0;
+  const server = http.createServer((_req, res) => {
+    step += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    if (step <= 2) {
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: `c_${step}`,
+                    type: "function",
+                    function: { name: "lookup", arguments: "{}" },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { content: "汇总已采集结果：研究结论已完成。" } }],
+      }),
+    );
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const addr = server.address();
+  assert.ok(addr && typeof addr !== "string");
+
+  try {
+    const traces: string[] = [];
+    const lookupTool: HarnessTool = {
+      spec: {
+        name: "lookup",
+        description: "Lookup evidence",
+        parameters: { type: "object" },
+      },
+      riskTier: "read_only",
+      async execute() {
+        return "evidence item";
+      },
+    };
+    const runner = new BuiltinAgentRunner({
+      router: createModelRouter({ config: createLocalConfig(`http://127.0.0.1:${addr.port}`) }),
+      tools: [lookupTool],
+      maxTurns: 2,
+    });
+    const outcome = await runner.run({
+      taskId: parseTaskId("task_wrapup"),
+      conversationId: parseConversationId("conv_1"),
+      taskKind: "browser_research",
+      goal: "Research topic",
+      signal: new AbortController().signal,
+      reportProgress() {},
+      reportTrace(entry) {
+        traces.push(`${entry.kind}:${entry.title}`);
+      },
+      async requestApproval() {
+        return "approved";
+      },
+      async requestUserPause() {},
+    });
+    assert.equal(outcome.kind, "completed");
+    if (outcome.kind === "completed") {
+      assert.match(outcome.summary, /研究结论已完成/);
+    }
+    assert.ok(traces.some((t) => t.startsWith("tool_call:")));
+    assert.ok(traces.some((t) => t.startsWith("tool_result:")));
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

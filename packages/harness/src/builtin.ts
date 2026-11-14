@@ -48,7 +48,7 @@ export class BuiltinAgentRunner implements TaskRunner {
     ];
     this.router = options.router;
     this.toolsByName = new Map(options.tools.map((tool) => [tool.spec.name, tool]));
-    this.maxTurns = options.maxTurns ?? 12;
+    this.maxTurns = options.maxTurns ?? 24;
     this.systemPrompt =
       options.systemPrompt ??
       "You are the background execution harness. Complete the assigned goal accurately using the available tools, then return a concise factual summary.";
@@ -63,11 +63,20 @@ export class BuiltinAgentRunner implements TaskRunner {
       { role: "user", content: ctx.goal },
     ];
     const toolSpecs = Array.from(this.toolsByName.values()).map((t) => t.spec);
+    let collectedToolOutput = false;
+    let lastErrorText = "";
+    let repeatedErrorCount = 0;
 
     for (let turn = 0; turn < this.maxTurns; turn++) {
       if (ctx.signal.aborted) return { kind: "cancelled" };
 
-      ctx.reportProgress(`Planning step ${turn + 1}`);
+      const planLabel = `Planning step ${turn + 1}/${this.maxTurns}`;
+      ctx.reportProgress(planLabel);
+      ctx.reportTrace?.({
+        kind: "planning",
+        title: planLabel,
+      });
+
       const response = await this.router.generate({
         role: "task_planner",
         messages,
@@ -92,11 +101,18 @@ export class BuiltinAgentRunner implements TaskRunner {
         if (ctx.signal.aborted) return { kind: "cancelled" };
         const tool = this.toolsByName.get(call.name);
         if (!tool) {
+          const msg = `Error: unknown tool "${call.name}"`;
+          ctx.reportTrace?.({
+            kind: "error",
+            title: msg,
+            toolName: call.name,
+            isError: true,
+          });
           messages.push({
             role: "tool",
             toolCallId: call.id,
             toolName: call.name,
-            content: `Error: unknown tool "${call.name}"`,
+            content: msg,
           });
           continue;
         }
@@ -112,6 +128,12 @@ export class BuiltinAgentRunner implements TaskRunner {
             : tool.riskTier === "external_send" || tool.riskTier === "destructive";
 
         if (needsApproval) {
+          ctx.reportTrace?.({
+            kind: "approval",
+            title: `Waiting for approval: ${call.name}`,
+            detail: JSON.stringify(call.arguments).slice(0, 300),
+            toolName: call.name,
+          });
           const decision = await ctx.requestApproval({
             actionSummary: `Run tool ${call.name}`,
             riskTier: tool.riskTier,
@@ -119,6 +141,12 @@ export class BuiltinAgentRunner implements TaskRunner {
             draftPreview: JSON.stringify(call.arguments),
           });
           if (decision === "denied") {
+            ctx.reportTrace?.({
+              kind: "approval",
+              title: `Denied tool ${call.name}`,
+              toolName: call.name,
+              isError: true,
+            });
             messages.push({
               role: "tool",
               toolCallId: call.id,
@@ -129,9 +157,26 @@ export class BuiltinAgentRunner implements TaskRunner {
           }
         }
 
+        const argsPreview = JSON.stringify(call.arguments).slice(0, 320);
         ctx.reportProgress(`Running tool ${call.name}`);
+        ctx.reportTrace?.({
+          kind: "tool_call",
+          title: `Call ${call.name}`,
+          detail: argsPreview,
+          toolName: call.name,
+        });
+
         try {
           const output = await tool.execute(call.arguments, ctx);
+          collectedToolOutput = true;
+          lastErrorText = "";
+          repeatedErrorCount = 0;
+          ctx.reportTrace?.({
+            kind: "tool_result",
+            title: `Result ${call.name}`,
+            detail: output.slice(0, 500),
+            toolName: call.name,
+          });
           messages.push({
             role: "tool",
             toolCallId: call.id,
@@ -139,13 +184,57 @@ export class BuiltinAgentRunner implements TaskRunner {
             content: output,
           });
         } catch (err) {
+          const errText = err instanceof Error ? err.message : String(err);
+          const content = `Tool error: ${errText}`;
+          if (errText === lastErrorText) {
+            repeatedErrorCount += 1;
+          } else {
+            lastErrorText = errText;
+            repeatedErrorCount = 1;
+          }
+          ctx.reportTrace?.({
+            kind: "error",
+            title: `Tool error (${call.name})`,
+            detail: errText.slice(0, 500),
+            toolName: call.name,
+            isError: true,
+          });
           messages.push({
             role: "tool",
             toolCallId: call.id,
             toolName: call.name,
-            content: `Tool error: ${err instanceof Error ? err.message : String(err)}`,
+            content,
           });
+          if (repeatedErrorCount >= 4 && !collectedToolOutput) {
+            return {
+              kind: "failed",
+              error: `Aborted after repeated fatal tool error: ${errText}`,
+            };
+          }
         }
+      }
+    }
+
+    if (collectedToolOutput && !ctx.signal.aborted) {
+      ctx.reportProgress("Synthesizing collected findings");
+      ctx.reportTrace?.({
+        kind: "planning",
+        title: "Reached step budget; synthesizing findings",
+      });
+      const wrapUp = await this.router.generate({
+        role: "task_planner",
+        messages: [
+          ...messages,
+          {
+            role: "user",
+            content:
+              "You have reached the tool step budget. Stop calling tools and write a concise, accurate summary based only on the evidence already gathered above.",
+          },
+        ],
+        signal: ctx.signal,
+      });
+      if (wrapUp.text.trim()) {
+        return { kind: "completed", summary: wrapUp.text.trim() };
       }
     }
 

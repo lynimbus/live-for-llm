@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { parseConversationId, parseMemoryId, parseMessageId } from "@live-for-llm/protocol";
+import { parseConversationId, parseMemoryId, parseMessageId, parseTaskId } from "@live-for-llm/protocol";
 import { exportMemoriesToMarkdown, importMarkdownEdits, MemoryStore } from "../src/index.ts";
 
 test("MemoryStore stores, searches with Chinese trigram + vector cosine, and deletes", () => {
@@ -114,6 +114,24 @@ test("MemoryStore persists relationship state and chat messages", () => {
     assert.equal(renamed?.title, "构建调试");
     assert.equal(store.deleteConversation(conv2.id), true);
     assert.equal(store.listConversations().some((c) => c.id === conv2.id), false);
+
+    const tracedTaskId = parseTaskId("task_trace_1");
+    const e1 = store.appendTaskTrace({
+      taskId: tracedTaskId,
+      kind: "planning",
+      title: "Planning step 1/24",
+    });
+    const e2 = store.appendTaskTrace({
+      taskId: tracedTaskId,
+      kind: "browser_action",
+      title: "Loaded Example",
+      url: "https://example.com",
+    });
+    assert.equal(e1.seq, 1);
+    assert.equal(e2.seq, 2);
+    const traces = store.listTaskTraces(tracedTaskId);
+    assert.equal(traces.length, 2);
+    assert.equal(traces[1]?.url, "https://example.com");
   } finally {
     store.close();
   }

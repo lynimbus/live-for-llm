@@ -22,17 +22,11 @@ export interface DaemonConfig {
 
 export const DEFAULT_HARNESS_SETTINGS: HarnessSettings = {
   defaultBackend: "builtin",
+  browserBackend: "daemon",
 };
 
-/** Maps configured harness backend + taskKind to a concrete registered TaskRunner id. */
-export function resolveConfiguredRunnerId(
-  harness: HarnessSettings,
-  taskKind: TaskKind,
-): string {
-  if (taskKind === "browser_research" || taskKind === "browser_post") {
-    return "builtin-agent";
-  }
-  switch (harness.defaultBackend) {
+function mapBackendToRunnerId(backend: HarnessSettings["defaultBackend"]): string {
+  switch (backend) {
     case "auto":
     case "builtin":
       return "builtin-agent";
@@ -47,6 +41,25 @@ export function resolveConfiguredRunnerId(
     case "custom":
       return "custom-cli";
   }
+}
+
+/** Maps configured harness + browser backend + taskKind to a registered TaskRunner id. */
+export function resolveConfiguredRunnerId(
+  harness: HarnessSettings,
+  taskKind: TaskKind,
+): string {
+  if (taskKind === "browser_research" || taskKind === "browser_post") {
+    const browserBackend = harness.browserBackend ?? "daemon";
+    if (browserBackend === "daemon") {
+      return "browser-runner";
+    }
+    if (browserBackend === "follow_harness") {
+      const mapped = mapBackendToRunnerId(harness.defaultBackend);
+      return mapped === "builtin-agent" ? "browser-runner" : mapped;
+    }
+    return mapBackendToRunnerId(browserBackend);
+  }
+  return mapBackendToRunnerId(harness.defaultBackend);
 }
 
 export function createDefaultDaemonConfig(overrides?: Partial<DaemonConfig>): DaemonConfig {

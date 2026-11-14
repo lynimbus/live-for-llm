@@ -8,6 +8,9 @@ export interface ExternalCliRunnerOptions {
   readonly command: string | ((ctx: TaskRunContext) => string);
   readonly buildArgs: (goal: string, ctx: TaskRunContext) => readonly string[];
   readonly cwd?: string | ((ctx: TaskRunContext) => string | undefined);
+  readonly env?:
+    | Record<string, string | undefined>
+    | ((ctx: TaskRunContext) => Record<string, string | undefined>);
   readonly supportedKinds?: readonly TaskKind[];
 }
 
@@ -19,6 +22,7 @@ export class ExternalCliRunner implements TaskRunner {
   private readonly command: ExternalCliRunnerOptions["command"];
   private readonly buildArgs: ExternalCliRunnerOptions["buildArgs"];
   private readonly cwd?: ExternalCliRunnerOptions["cwd"];
+  private readonly env?: ExternalCliRunnerOptions["env"];
 
   constructor(options: ExternalCliRunnerOptions) {
     this.id = options.id;
@@ -27,6 +31,9 @@ export class ExternalCliRunner implements TaskRunner {
     this.buildArgs = options.buildArgs;
     if (options.cwd !== undefined) {
       this.cwd = options.cwd;
+    }
+    if (options.env !== undefined) {
+      this.env = options.env;
     }
     this.supportedKinds = options.supportedKinds ?? ["harness_coding", "shell_utility"];
   }
@@ -41,10 +48,12 @@ export class ExternalCliRunner implements TaskRunner {
       let cmdName: string;
       let args: string[];
       let resolvedCwd: string | undefined;
+      let extraEnv: Record<string, string | undefined> | undefined;
       try {
         cmdName = typeof this.command === "function" ? this.command(ctx) : this.command;
         args = [...this.buildArgs(ctx.goal, ctx)];
         resolvedCwd = typeof this.cwd === "function" ? this.cwd(ctx) : this.cwd;
+        extraEnv = typeof this.env === "function" ? this.env(ctx) : this.env;
       } catch (err) {
         resolve({
           kind: "failed",
@@ -57,8 +66,15 @@ export class ExternalCliRunner implements TaskRunner {
         return;
       }
 
+      ctx.reportTrace?.({
+        kind: "status",
+        title: `Spawn ${cmdName}`,
+        detail: args.join(" ").slice(0, 320),
+      });
+
       const child = spawn(cmdName, args, {
         ...(resolvedCwd !== undefined ? { cwd: resolvedCwd } : {}),
+        ...(extraEnv ? { env: { ...process.env, ...extraEnv } } : {}),
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -80,6 +96,11 @@ export class ExternalCliRunner implements TaskRunner {
           if (line) {
             stdoutLines.push(line);
             ctx.reportProgress(line.slice(0, 140));
+            ctx.reportTrace?.({
+              kind: "cli_output",
+              title: line.slice(0, 140),
+              ...(line.length > 140 ? { detail: line.slice(0, 600) } : {}),
+            });
           }
           idx = stdoutBuf.indexOf("\n");
         }
@@ -87,7 +108,15 @@ export class ExternalCliRunner implements TaskRunner {
 
       child.stderr.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf8").trim();
-        if (text) stderrLines.push(text);
+        if (text) {
+          stderrLines.push(text);
+          ctx.reportTrace?.({
+            kind: "cli_output",
+            title: text.slice(0, 140),
+            ...(text.length > 140 ? { detail: text.slice(0, 600) } : {}),
+            isError: true,
+          });
+        }
       });
 
       child.on("error", (err) => {

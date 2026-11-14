@@ -1,4 +1,6 @@
 import {
+  BROWSER_BACKENDS,
+  type BrowserBackend,
   HARNESS_BACKENDS,
   type HarnessBackend,
   LLM_PROVIDER_KINDS,
@@ -52,6 +54,25 @@ function getHarnessBackendLabel(backend: HarnessBackend): string {
       return t("harnessBackendAuto");
     case "builtin":
       return t("harnessBackendBuiltin");
+    case "codex":
+      return t("harnessBackendCodex");
+    case "claude_code":
+      return t("harnessBackendClaude");
+    case "pi":
+      return t("harnessBackendPi");
+    case "opencode":
+      return t("harnessBackendOpenCode");
+    case "custom":
+      return t("harnessBackendCustom");
+  }
+}
+
+function getBrowserBackendLabel(backend: BrowserBackend): string {
+  switch (backend) {
+    case "daemon":
+      return t("browserBackendDaemon");
+    case "follow_harness":
+      return t("browserBackendFollow");
     case "codex":
       return t("harnessBackendCodex");
     case "claude_code":
@@ -124,6 +145,9 @@ export function SettingsPage(props: SettingsPageProps) {
   const modelsDirty = signal(false);
 
   const harnessBackend = signal<HarnessBackend>(store.harnessSettings().defaultBackend);
+  const browserBackend = signal<BrowserBackend>(
+    store.harnessSettings().browserBackend ?? "daemon",
+  );
   const harnessWorkdir = signal(store.harnessSettings().workingDir ?? "");
   const harnessCustomCmd = signal(store.harnessSettings().customCommand ?? "");
   const harnessCustomArgs = signal(store.harnessSettings().customArgs ?? "");
@@ -155,6 +179,7 @@ export function SettingsPage(props: SettingsPageProps) {
     const cfg = store.harnessSettings();
     if (!harnessDirty()) {
       harnessBackend.set(cfg.defaultBackend);
+      browserBackend.set(cfg.browserBackend ?? "daemon");
       harnessWorkdir.set(cfg.workingDir ?? "");
       harnessCustomCmd.set(cfg.customCommand ?? "");
       harnessCustomArgs.set(cfg.customArgs ?? "");
@@ -286,6 +311,7 @@ export function SettingsPage(props: SettingsPageProps) {
     const customArgs = harnessCustomArgs().trim();
     const ok = await store.updateHarnessSettings({
       defaultBackend: harnessBackend(),
+      browserBackend: browserBackend(),
       ...(workdir ? { workingDir: workdir } : {}),
       ...(customCommand ? { customCommand } : {}),
       ...(customArgs ? { customArgs } : {}),
@@ -731,6 +757,44 @@ export function SettingsPage(props: SettingsPageProps) {
 
                 <Button
                   testID="save-harness-btn"
+                  onPress={() => void saveHarnessSettings()}
+                  class="self-start px-4 py-2 rounded-lg bg-primary"
+                  style={BUTTON_MOTION_STYLE}
+                  activeStyle={BUTTON_ACTIVE_STYLE}
+                >
+                  <Text class="text-xs font-semibold text-primary-foreground">
+                    {t("btnSaveHarness")}
+                  </Text>
+                </Button>
+              </View>
+
+              <View class="p-4 rounded-xl border border-border bg-card" style={{ gap: 10 }}>
+                <Text class="text-sm font-semibold text-foreground">
+                  {t("browserBackendTitle")}
+                </Text>
+                <Text class="text-xs text-muted-foreground" style={{ lineHeight: 17 }}>
+                  {t("browserBackendDesc")}
+                </Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <Each of={BROWSER_BACKENDS}>
+                    {(backend) => {
+                      const typed = (): BrowserBackend => backend();
+                      return (
+                        <SelectablePill
+                          testID={`browser-${typed()}`}
+                          label={() => getBrowserBackendLabel(typed())}
+                          selected={() => browserBackend() === typed()}
+                          onPress={() => {
+                            harnessDirty.set(true);
+                            browserBackend.set(typed());
+                          }}
+                        />
+                      );
+                    }}
+                  </Each>
+                </View>
+                <Button
+                  testID="save-browser-btn"
                   onPress={() => void saveHarnessSettings()}
                   class="self-start px-4 py-2 rounded-lg bg-primary"
                   style={BUTTON_MOTION_STYLE}

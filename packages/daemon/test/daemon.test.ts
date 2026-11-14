@@ -324,10 +324,25 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
     });
     await daemon.handleCommand({
       kind: "harness.update",
-      settings: { defaultBackend: "codex", workingDir: "/tmp" },
+      settings: { defaultBackend: "codex", browserBackend: "follow_harness", workingDir: "/tmp" },
     });
     assert.equal(daemon.config.harness.defaultBackend, "codex");
+    assert.equal(daemon.config.harness.browserBackend, "follow_harness");
     assert.ok(daemon.store.listConversations().some((c) => c.id === "conv_side"));
+
+    const { resolveConfiguredRunnerId } = await import("../src/config.ts");
+    assert.equal(
+      resolveConfiguredRunnerId({ defaultBackend: "codex", browserBackend: "daemon" }, "browser_research"),
+      "browser-runner",
+    );
+    assert.equal(
+      resolveConfiguredRunnerId({ defaultBackend: "codex", browserBackend: "daemon" }, "harness_coding"),
+      "codex-cli",
+    );
+    assert.equal(
+      resolveConfiguredRunnerId({ defaultBackend: "pi", browserBackend: "follow_harness" }, "browser_research"),
+      "pi-cli",
+    );
 
     ws.close();
   } finally {

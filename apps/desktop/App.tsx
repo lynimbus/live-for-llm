@@ -29,6 +29,7 @@ import {
   type CompanionUiStore,
   type SettingsSection,
 } from "./src/state.ts";
+import { TaskDetailView } from "./src/TaskDetailView.tsx";
 import { TasksSidebar } from "./src/TasksSidebar.tsx";
 
 export interface AppProps {
@@ -496,8 +497,12 @@ export function App(props: AppProps = {}) {
             </If>
 
             <View style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
-              {/* Minimal ChatGPT-style top header */}
-              <View
+              <If
+                when={store.activePage() === "task_detail"}
+                else={
+                  <View style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+                    {/* Minimal ChatGPT-style top header */}
+                    <View
                 class="px-3 py-2.5 border-b border-border bg-background"
                 style={{
                   flexDirection: "row",
@@ -1049,6 +1054,11 @@ export function App(props: AppProps = {}) {
                   </If>
                 </View>
               </View>
+                  </View>
+                }
+              >
+                <TaskDetailView store={store} />
+              </If>
             </View>
 
             <If when={store.drawerOpen()}>

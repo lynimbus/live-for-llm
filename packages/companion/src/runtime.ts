@@ -278,14 +278,35 @@ export class CompanionRuntime {
     this.store.upsertTask(current);
     this.emit({ kind: "task.updated", task: current });
 
+    const emitTrace = (input: Parameters<NonNullable<Parameters<typeof runner.run>[0]["reportTrace"]>>[0]) => {
+      const entry = this.store.appendTaskTrace({
+        taskId,
+        kind: input.kind,
+        title: input.title,
+        ...(input.detail !== undefined ? { detail: input.detail } : {}),
+        ...(input.toolName !== undefined ? { toolName: input.toolName } : {}),
+        ...(input.url !== undefined ? { url: input.url } : {}),
+        ...(input.isError ? { isError: true } : {}),
+      });
+      this.emit({ kind: "task.trace", entry });
+    };
+
     const abortController = new AbortController();
     this.activeAbortControllers.set(taskId, abortController);
+    let lastShot: string | undefined;
+    let lastUrl = "";
 
     void (async () => {
+      const startSummary = `Starting ${runner.label}`;
       commitTask({
         kind: "running",
         startedAt: new Date().toISOString(),
-        stepSummary: `Starting ${runner.label}`,
+        stepSummary: startSummary,
+      });
+      emitTrace({
+        kind: "status",
+        title: startSummary,
+        detail: params.goal,
       });
 
       try {
@@ -295,7 +316,10 @@ export class CompanionRuntime {
           taskKind: params.taskKind,
           goal: params.goal,
           signal: abortController.signal,
-          reportProgress: (stepSummary, screenshotBase64) => {
+          reportProgress: (stepSummary, screenshotBase64, pageUrl) => {
+            if (screenshotBase64) lastShot = screenshotBase64;
+            if (pageUrl !== undefined && pageUrl) lastUrl = pageUrl;
+            const resolvedShot = screenshotBase64 ?? lastShot;
             commitTask({
               kind: "running",
               startedAt:
@@ -303,7 +327,8 @@ export class CompanionRuntime {
                   ? current.state.startedAt
                   : new Date().toISOString(),
               stepSummary,
-              ...(screenshotBase64 ? { latestScreenshotBase64: screenshotBase64 } : {}),
+              ...(resolvedShot ? { latestScreenshotBase64: resolvedShot } : {}),
+              ...(lastUrl ? { latestUrl: lastUrl } : {}),
             });
             if (screenshotBase64) {
               this.emit({
@@ -311,10 +336,27 @@ export class CompanionRuntime {
                 taskId,
                 mimeType: "image/jpeg",
                 base64: screenshotBase64,
-                url: "",
+                url: lastUrl,
                 capturedAt: new Date().toISOString(),
               });
             }
+          },
+          reportTrace: (entry) => {
+            if (entry.screenshotBase64) {
+              lastShot = entry.screenshotBase64;
+              if (entry.url) lastUrl = entry.url;
+              this.emit({
+                kind: "browser.screenshot",
+                taskId,
+                mimeType: "image/jpeg",
+                base64: entry.screenshotBase64,
+                url: lastUrl,
+                capturedAt: new Date().toISOString(),
+              });
+            } else if (entry.url) {
+              lastUrl = entry.url;
+            }
+            emitTrace(entry);
           },
           requestApproval: (req) =>
             new Promise<ApprovalDecision>((resolve) => {
@@ -322,6 +364,10 @@ export class CompanionRuntime {
               const requestedAt = new Date().toISOString();
               this.pendingApprovals.set(approvalId, (decision) => {
                 this.pendingApprovals.delete(approvalId);
+                emitTrace({
+                  kind: "approval",
+                  title: `Approval ${decision}: ${req.actionSummary}`,
+                });
                 resolve(decision);
               });
               commitTask({
@@ -332,6 +378,11 @@ export class CompanionRuntime {
                 ...(req.domain ? { domain: req.domain } : {}),
                 ...(req.draftPreview ? { draftPreview: req.draftPreview } : {}),
                 requestedAt,
+              });
+              emitTrace({
+                kind: "approval",
+                title: `Awaiting approval [${req.riskTier}]: ${req.actionSummary}`,
+                ...(req.draftPreview ? { detail: req.draftPreview } : {}),
               });
               this.emit({
                 kind: "approval.requested",
@@ -350,6 +401,10 @@ export class CompanionRuntime {
             new Promise<void>((resolve) => {
               this.pendingUserResumes.set(taskId, () => {
                 this.pendingUserResumes.delete(taskId);
+                emitTrace({
+                  kind: "status",
+                  title: "User resumed session",
+                });
                 resolve();
               });
               commitTask({
@@ -357,6 +412,11 @@ export class CompanionRuntime {
                 reason: req.reason,
                 instructions: req.instructions,
                 pausedAt: new Date().toISOString(),
+              });
+              emitTrace({
+                kind: "approval",
+                title: `Paused (${req.reason})`,
+                detail: req.instructions,
               });
             }),
         });
@@ -366,6 +426,11 @@ export class CompanionRuntime {
             kind: "completed",
             summary: outcome.summary,
             completedAt: new Date().toISOString(),
+          });
+          emitTrace({
+            kind: "status",
+            title: "Task completed",
+            detail: outcome.summary.slice(0, 800),
           });
           const reportMsg: ChatMessage = {
             id: parseMessageId(newId("msg")),
@@ -379,18 +444,32 @@ export class CompanionRuntime {
           this.emit({ kind: "chat.message", message: reportMsg });
         } else if (outcome.kind === "cancelled") {
           commitTask({ kind: "cancelled", cancelledAt: new Date().toISOString() });
+          emitTrace({ kind: "status", title: "Task cancelled" });
         } else {
           commitTask({
             kind: "failed",
             error: outcome.error,
             failedAt: new Date().toISOString(),
           });
+          emitTrace({
+            kind: "error",
+            title: "Task failed",
+            detail: outcome.error,
+            isError: true,
+          });
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         commitTask({
           kind: "failed",
-          error: err instanceof Error ? err.message : String(err),
+          error: message,
           failedAt: new Date().toISOString(),
+        });
+        emitTrace({
+          kind: "error",
+          title: "Task crashed",
+          detail: message,
+          isError: true,
         });
       } finally {
         this.activeAbortControllers.delete(taskId);

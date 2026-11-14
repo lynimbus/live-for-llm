@@ -14,6 +14,7 @@ import {
   type ProactiveRule,
   type RelationshipState,
   type TaskRecord,
+  type TaskTraceEntry,
   parseDaemonEvent,
 } from "@live-for-llm/protocol";
 
@@ -24,6 +25,7 @@ export interface DaemonStateSnapshot {
   readonly memories: readonly MemoryRecord[];
   readonly relationship: RelationshipState;
   readonly tasks: readonly TaskRecord[];
+  readonly taskTraces?: Record<string, readonly TaskTraceEntry[]>;
   readonly policy: PolicyConfig;
   readonly proactiveRules: readonly ProactiveRule[];
   readonly modelSettings?: ModelSettingsSummary;
@@ -199,6 +201,7 @@ export const DEFAULT_MODEL_SETTINGS: ModelSettingsSummary = {
 
 export const DEFAULT_HARNESS_SETTINGS: HarnessSettings = {
   defaultBackend: "builtin",
+  browserBackend: "daemon",
 };
 
 export const EMPTY_SNAPSHOT: Omit<DaemonStateSnapshot, "conversationId"> = {

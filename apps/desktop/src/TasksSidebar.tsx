@@ -64,6 +64,10 @@ function summarizeTaskState(task: TaskRecord): string {
 }
 
 function resolveTaskScreenshot(store: CompanionUiStore, task: TaskRecord): string | undefined {
+  const fromFrame = store.browserFrames()[task.id]?.base64;
+  if (fromFrame) {
+    return fromFrame;
+  }
   const fromMap = store.screenshots()[task.id];
   if (fromMap) {
     return fromMap;
@@ -92,6 +96,12 @@ export function TasksSidebar(props: TasksSidebarProps) {
     animateLayout("ease");
     const nextVal = !isExpanded(task);
     toggledMap.update((prev) => ({ ...prev, [task.id]: nextVal }));
+  };
+
+  const inspectTask = (task: TaskRecord) => {
+    animateLayout("ease");
+    store.inspectedTaskId.set(task.id);
+    store.activePage.set("task_detail");
   };
 
   return (
@@ -213,22 +223,48 @@ export function TasksSidebar(props: TasksSidebarProps) {
                   <If when={expanded()}>
                     <View
                       testID={`task-details-${task().id}`}
-                      class="px-3 pb-3 pt-1 border-t border-border"
+                      class="px-3 pb-3 pt-1.5 border-t border-border"
                       style={{ gap: 8 }}
                     >
-                      <Text class="text-[11px] text-muted-foreground" style={{ lineHeight: 16 }}>
-                        {`${task().taskKind} • ${DaemonDefaults.shortId(task().id)} • ${summarizeTaskState(task())}`}
-                      </Text>
+                      <Button
+                        testID={`task-open-detail-${task().id}`}
+                        onPress={() => inspectTask(task())}
+                        class="p-2 rounded-lg bg-card border border-border"
+                        style={[
+                          BUTTON_MOTION_STYLE,
+                          { width: "100%", alignItems: "flex-start", gap: 6 },
+                        ]}
+                        hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+                        activeStyle={BUTTON_ACTIVE_STYLE}
+                      >
+                        <Text class="text-[11px] text-muted-foreground" style={{ lineHeight: 16 }}>
+                          {`${task().taskKind} • ${DaemonDefaults.shortId(task().id)} • ${summarizeTaskState(task())}`}
+                        </Text>
 
-                      <If when={resolveTaskScreenshot(store, task())}>
-                        {(b64) => (
-                          <Image
-                            testID={`task-shot-${task().id}`}
-                            src={`data:image/png;base64,${b64()}`}
-                            style={{ width: "100%", height: 136, borderRadius: 8 }}
-                          />
-                        )}
-                      </If>
+                        <If when={(store.taskTraces()[task().id]?.length ?? 0) > 0}>
+                          <Text class="text-[11px] text-foreground truncate" style={{ width: "100%" }}>
+                            {(() => {
+                              const list = store.taskTraces()[task().id] ?? [];
+                              const latest = list[list.length - 1];
+                              return latest ? `${list.length}. ${latest.title}` : "";
+                            })()}
+                          </Text>
+                        </If>
+
+                        <If when={resolveTaskScreenshot(store, task())}>
+                          {(b64) => (
+                            <Image
+                              testID={`task-shot-${task().id}`}
+                              src={`data:image/png;base64,${b64()}`}
+                              style={{ width: "100%", height: 120, borderRadius: 6 }}
+                            />
+                          )}
+                        </If>
+
+                        <Text class="text-[11px] font-medium text-foreground">
+                          {t("taskOpenDetailHint")}
+                        </Text>
+                      </Button>
 
                       <If when={task().state.kind === "awaiting_approval"}>
                         <View style={{ flexDirection: "row", gap: 6 }}>

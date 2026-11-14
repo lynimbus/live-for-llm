@@ -37,8 +37,10 @@ import {
   type ApprovalRequest,
   type PolicyConfig,
   type TaskRecord,
+  type TaskTraceEntry,
   TRUST_POLICY_MODES,
   parseTaskRecord,
+  parseTaskTraceEntry,
 } from "./tasks.ts";
 
 export interface ChatMessage {
@@ -73,8 +75,20 @@ export const HARNESS_BACKENDS = [
 ] as const;
 export type HarnessBackend = (typeof HARNESS_BACKENDS)[number];
 
+export const BROWSER_BACKENDS = [
+  "daemon",
+  "follow_harness",
+  "codex",
+  "claude_code",
+  "pi",
+  "opencode",
+  "custom",
+] as const;
+export type BrowserBackend = (typeof BROWSER_BACKENDS)[number];
+
 export interface HarnessSettings {
   readonly defaultBackend: HarnessBackend;
+  readonly browserBackend?: BrowserBackend;
   readonly customCommand?: string;
   readonly customArgs?: string;
   readonly workingDir?: string;
@@ -241,6 +255,10 @@ export type DaemonEvent =
   | {
       readonly kind: "task.updated";
       readonly task: TaskRecord;
+    }
+  | {
+      readonly kind: "task.trace";
+      readonly entry: TaskTraceEntry;
     }
   | {
       readonly kind: "browser.screenshot";
@@ -420,11 +438,16 @@ function parseConversationSummary(raw: unknown): ConversationSummary {
 
 function parseHarnessSettings(raw: unknown): HarnessSettings {
   const obj = expectObject(raw, "HarnessSettings");
+  const browserBackend =
+    obj["browserBackend"] === undefined
+      ? undefined
+      : expectEnum(obj["browserBackend"], BROWSER_BACKENDS, "HarnessSettings.browserBackend");
   const customCommand = expectOptionalString(obj["customCommand"], "HarnessSettings.customCommand");
   const customArgs = expectOptionalString(obj["customArgs"], "HarnessSettings.customArgs");
   const workingDir = expectOptionalString(obj["workingDir"], "HarnessSettings.workingDir");
   return {
     defaultBackend: expectEnum(obj["defaultBackend"], HARNESS_BACKENDS, "HarnessSettings.defaultBackend"),
+    ...(browserBackend !== undefined ? { browserBackend } : {}),
     ...(customCommand !== undefined && customCommand.trim()
       ? { customCommand: customCommand.trim() }
       : {}),
@@ -608,6 +631,8 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent {
       };
     case "task.updated":
       return { kind: "task.updated", task: parseTaskRecord(obj["task"]) };
+    case "task.trace":
+      return { kind: "task.trace", entry: parseTaskTraceEntry(obj["entry"]) };
     case "browser.screenshot":
       return {
         kind: "browser.screenshot",

@@ -18,6 +18,7 @@ import {
   type RelationshipUpdate,
   type TaskId,
   type TaskRecord,
+  type TaskTraceEntry,
   type TrustPolicyMode,
   parseConversationId,
 } from "@live-for-llm/protocol";
@@ -31,8 +32,14 @@ import {
 } from "./client";
 import { t } from "./i18n.ts";
 
-export type AppPage = "chat" | "settings";
+export type AppPage = "chat" | "settings" | "task_detail";
 export type SettingsSection = "general" | "models" | "harness" | "memories";
+
+export interface BrowserFrameSnapshot {
+  readonly base64: string;
+  readonly url: string;
+  readonly capturedAt: string;
+}
 
 function generateConversationId(): ConversationId {
   const rand = Math.random().toString(16).slice(2, 10);
@@ -46,6 +53,7 @@ export interface CompanionUiStore {
   readonly connected: Signal<boolean>;
   readonly activePage: Signal<AppPage>;
   readonly settingsSection: Signal<SettingsSection>;
+  readonly inspectedTaskId: Signal<TaskId | null>;
   readonly sidebarOpen: Signal<boolean>;
   readonly drawerOpen: Signal<boolean>;
   readonly conversationId: Signal<ConversationId>;
@@ -55,6 +63,8 @@ export interface CompanionUiStore {
   readonly memories: Signal<readonly MemoryRecord[]>;
   readonly relationship: Signal<RelationshipState>;
   readonly tasks: Signal<readonly TaskRecord[]>;
+  readonly taskTraces: Signal<Record<string, readonly TaskTraceEntry[]>>;
+  readonly browserFrames: Signal<Record<string, BrowserFrameSnapshot>>;
   readonly screenshots: Signal<Record<string, string>>;
   readonly policy: Signal<PolicyConfig>;
   readonly proactiveRules: Signal<readonly ProactiveRule[]>;
@@ -103,6 +113,7 @@ export function createCompanionUiStore(options?: {
   const connected = signal(false);
   const activePage = signal<AppPage>("chat");
   const settingsSection = signal<SettingsSection>("general");
+  const inspectedTaskId = signal<TaskId | null>(null);
   const sidebarOpen = signal(true);
   const drawerOpen = signal(false);
   const messages = signal<readonly ChatMessage[]>(EMPTY_SNAPSHOT.messages);
@@ -110,6 +121,8 @@ export function createCompanionUiStore(options?: {
   const memories = signal<readonly MemoryRecord[]>(EMPTY_SNAPSHOT.memories);
   const relationship = signal<RelationshipState>(EMPTY_SNAPSHOT.relationship);
   const tasks = signal<readonly TaskRecord[]>(EMPTY_SNAPSHOT.tasks);
+  const taskTraces = signal<Record<string, readonly TaskTraceEntry[]>>({});
+  const browserFrames = signal<Record<string, BrowserFrameSnapshot>>({});
   const screenshots = signal<Record<string, string>>({});
   const policy = signal<PolicyConfig>(EMPTY_SNAPSHOT.policy);
   const proactiveRules = signal<readonly ProactiveRule[]>(EMPTY_SNAPSHOT.proactiveRules);
@@ -157,6 +170,25 @@ export function createCompanionUiStore(options?: {
     memories.set(snap.memories);
     relationship.set(snap.relationship);
     tasks.set(snap.tasks);
+    if (snap.taskTraces) {
+      taskTraces.set(snap.taskTraces);
+    }
+    const seededShots: Record<string, string> = {};
+    const seededFrames: Record<string, BrowserFrameSnapshot> = {};
+    for (const task of snap.tasks) {
+      if (task.state.kind === "running" && task.state.latestScreenshotBase64) {
+        seededShots[task.id] = task.state.latestScreenshotBase64;
+        seededFrames[task.id] = {
+          base64: task.state.latestScreenshotBase64,
+          url: task.state.latestUrl ?? "",
+          capturedAt: task.updatedAt,
+        };
+      }
+    }
+    if (Object.keys(seededShots).length > 0) {
+      screenshots.update((prev) => ({ ...seededShots, ...prev }));
+      browserFrames.update((prev) => ({ ...seededFrames, ...prev }));
+    }
     policy.set(snap.policy);
     proactiveRules.set(snap.proactiveRules);
     if (snap.modelSettings) {
@@ -204,24 +236,36 @@ export function createCompanionUiStore(options?: {
           event.task.state.latestScreenshotBase64
         ) {
           const shot = event.task.state.latestScreenshotBase64;
+          const url = event.task.state.latestUrl ?? "";
           screenshots.update((prev) => ({ ...prev, [event.task.id]: shot }));
-        } else if (
-          event.task.state.kind === "completed" ||
-          event.task.state.kind === "failed" ||
-          event.task.state.kind === "cancelled"
-        ) {
-          screenshots.update((prev) => {
-            if (!(event.task.id in prev)) return prev;
-            const next = { ...prev };
-            delete next[event.task.id];
-            return next;
-          });
+          browserFrames.update((prev) => ({
+            ...prev,
+            [event.task.id]: { base64: shot, url, capturedAt: event.task.updatedAt },
+          }));
         }
+        return;
+      case "task.trace":
+        taskTraces.update((prev) => {
+          const list = prev[event.entry.taskId] ?? [];
+          if (list.some((item) => item.id === event.entry.id)) return prev;
+          return {
+            ...prev,
+            [event.entry.taskId]: [...list, event.entry].slice(-200),
+          };
+        });
         return;
       case "browser.screenshot":
         screenshots.update((prev) => ({
           ...prev,
           [event.taskId]: event.base64,
+        }));
+        browserFrames.update((prev) => ({
+          ...prev,
+          [event.taskId]: {
+            base64: event.base64,
+            url: event.url,
+            capturedAt: event.capturedAt,
+          },
         }));
         return;
       case "approval.requested":
@@ -339,6 +383,7 @@ export function createCompanionUiStore(options?: {
     connected,
     activePage,
     settingsSection,
+    inspectedTaskId,
     sidebarOpen,
     drawerOpen,
     conversationId,
@@ -348,6 +393,8 @@ export function createCompanionUiStore(options?: {
     memories,
     relationship,
     tasks,
+    taskTraces,
+    browserFrames,
     screenshots,
     policy,
     proactiveRules,

@@ -1,5 +1,5 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import {
   type ActionRiskTier,
   type ApprovalDecision,
@@ -9,14 +9,48 @@ import {
 } from "@live-for-llm/protocol";
 import { type BrowserContext, chromium, type Page } from "playwright-core";
 
+function resolveChromiumExecutablePath(explicit?: string): string | undefined {
+  const direct = explicit?.trim() || process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"]?.trim();
+  if (direct && existsSync(direct)) return direct;
+
+  const names = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
+  const pathEnv = process.env["PATH"] ?? "";
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+
+  const user = process.env["USER"];
+  const fallbackDirs = [
+    ...(user ? [`/etc/profiles/per-user/${user}/bin`] : []),
+    "/run/current-system/sw/bin",
+    "/usr/bin",
+    "/usr/local/bin",
+  ];
+  for (const dir of fallbackDirs) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return direct || undefined;
+}
+
 export interface BrowserSnapshot {
   readonly url: string;
   readonly title: string;
   readonly textExcerpt: string;
+  readonly scrollY: number;
+  readonly scrollHeight: number;
   readonly interactiveElements: readonly {
     readonly tag: string;
     readonly text: string;
     readonly selectorHint: string;
+    readonly href?: string;
+    readonly inputType?: string;
   }[];
   readonly screenshotBase64: string;
   readonly mimeType: "image/jpeg";
@@ -44,8 +78,7 @@ export class PersistentBrowserManager {
 
   constructor(options: PersistentBrowserManagerOptions) {
     this.profilesRootDir = options.profilesRootDir;
-    this.executablePath =
-      options.executablePath ?? process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
+    this.executablePath = resolveChromiumExecutablePath(options.executablePath);
     this.defaultHeadless = options.defaultHeadless ?? true;
     mkdirSync(this.profilesRootDir, { recursive: true });
   }
@@ -87,7 +120,7 @@ export class PersistentBrowserManager {
     readonly maxTextLength?: number;
   }): Promise<BrowserSnapshot> {
     const page = await this.openSession({ profileId: params.profileId });
-    const maxLen = params.maxTextLength ?? 4000;
+    const maxLen = params.maxTextLength ?? 6000;
     const title = await page.title();
     const url = page.url();
 
@@ -95,24 +128,57 @@ export class PersistentBrowserManager {
       const bodyText = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim();
       const candidates = Array.from(
         document.querySelectorAll("a, button, input, textarea, select, [role='button']"),
-      ).slice(0, 40);
+      );
 
-      const interactiveElements = candidates.map((el, idx) => {
+      const interactiveElements: Array<{
+        tag: string;
+        text: string;
+        selectorHint: string;
+        href?: string;
+        inputType?: string;
+      }> = [];
+
+      let refSeq = 0;
+      for (const el of candidates) {
+        if (interactiveElements.length >= 40) break;
         const htmlEl = el as HTMLElement;
-        const idAttr = htmlEl.id ? `#${htmlEl.id}` : "";
+        const rect = htmlEl.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) continue;
+
+        const refId = `e${refSeq++}`;
+        htmlEl.setAttribute("data-livia-ref", refId);
+
         const aria = htmlEl.getAttribute("aria-label") ?? "";
         const placeholder = htmlEl.getAttribute("placeholder") ?? "";
-        const text = (htmlEl.innerText || aria || placeholder || "").trim().slice(0, 80);
-        const selectorHint = idAttr || `${el.tagName.toLowerCase()}:nth-of-type(${idx + 1})`;
-        return {
+        const titleAttr = htmlEl.getAttribute("title") ?? "";
+        const text = (htmlEl.innerText || aria || placeholder || titleAttr || "").trim().slice(0, 80);
+
+        let selectorHint = `[data-livia-ref="${refId}"]`;
+        if (htmlEl.id && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(htmlEl.id)) {
+          selectorHint = `#${htmlEl.id}`;
+        }
+
+        const anchorHref =
+          htmlEl instanceof HTMLAnchorElement && htmlEl.href ? htmlEl.href : undefined;
+        const inputType =
+          htmlEl instanceof HTMLInputElement ? htmlEl.type || "text" : undefined;
+
+        interactiveElements.push({
           tag: el.tagName.toLowerCase(),
           text,
           selectorHint,
-        };
-      });
+          ...(anchorHref ? { href: anchorHref } : {}),
+          ...(inputType ? { inputType } : {}),
+        });
+      }
+
+      const scrollY = Math.round(window.scrollY ?? 0);
+      const scrollHeight = Math.round(document.documentElement?.scrollHeight ?? 0);
 
       return {
         textExcerpt: bodyText.slice(0, limit),
+        scrollY,
+        scrollHeight,
         interactiveElements,
       };
     }, maxLen);
@@ -122,11 +188,45 @@ export class PersistentBrowserManager {
       url,
       title,
       textExcerpt: extracted.textExcerpt,
+      scrollY: extracted.scrollY,
+      scrollHeight: extracted.scrollHeight,
       interactiveElements: extracted.interactiveElements,
       screenshotBase64: buffer.toString("base64"),
       mimeType: "image/jpeg",
       capturedAt: new Date().toISOString(),
     };
+  }
+
+  async scroll(params: {
+    readonly profileId: BrowserProfileId;
+    readonly direction?: "down" | "up" | "top" | "bottom";
+  }): Promise<BrowserSnapshot> {
+    const page = await this.openSession({ profileId: params.profileId });
+    const dir = params.direction ?? "down";
+    await page.evaluate((direction: string) => {
+      const step = Math.max(320, Math.round(window.innerHeight * 0.8));
+      if (direction === "top") window.scrollTo(0, 0);
+      else if (direction === "bottom") window.scrollTo(0, document.documentElement?.scrollHeight ?? 99999);
+      else if (direction === "up") window.scrollBy(0, -step);
+      else window.scrollBy(0, step);
+    }, dir);
+    return this.captureSnapshot({ profileId: params.profileId });
+  }
+
+  async pressKey(params: {
+    readonly profileId: BrowserProfileId;
+    readonly key: string;
+  }): Promise<BrowserSnapshot> {
+    const page = await this.openSession({ profileId: params.profileId });
+    await page.keyboard.press(params.key);
+    await page.waitForLoadState("domcontentloaded", { timeout: 6000 }).catch(() => {});
+    return this.captureSnapshot({ profileId: params.profileId });
+  }
+
+  async goBack(params: { readonly profileId: BrowserProfileId }): Promise<BrowserSnapshot> {
+    const page = await this.openSession({ profileId: params.profileId });
+    await page.goBack({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
+    return this.captureSnapshot({ profileId: params.profileId });
   }
 
   async navigate(params: {

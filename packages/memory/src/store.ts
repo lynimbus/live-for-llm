@@ -19,6 +19,8 @@ import {
   type ScheduleId,
   type TaskId,
   type TaskRecord,
+  type TaskTraceEntry,
+  type TaskTraceKind,
   parseConversationId,
   parseMemoryId,
   parseMessageId,
@@ -207,6 +209,22 @@ export class MemoryStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS task_traces (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        detail TEXT,
+        tool_name TEXT,
+        url TEXT,
+        is_error INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_task_traces_task_seq
+        ON task_traces(task_id, seq);
     `);
 
     const cols = this.db
@@ -704,6 +722,99 @@ export class MemoryStore {
       .prepare("SELECT task_json FROM tasks ORDER BY updated_at DESC LIMIT ?")
       .all(limit) as unknown as { task_json: string }[];
     return rows.map((row) => parseTaskRecord(JSON.parse(row.task_json)));
+  }
+
+  appendTaskTrace(input: {
+    readonly id?: string;
+    readonly taskId: TaskId;
+    readonly kind: TaskTraceKind;
+    readonly title: string;
+    readonly detail?: string;
+    readonly toolName?: string;
+    readonly url?: string;
+    readonly isError?: boolean;
+    readonly createdAt?: string;
+  }): TaskTraceEntry {
+    const maxRow = this.db
+      .prepare("SELECT COALESCE(MAX(seq), 0) AS max_seq FROM task_traces WHERE task_id = ?")
+      .get(input.taskId) as unknown as { max_seq: number };
+    const seq = (maxRow?.max_seq ?? 0) + 1;
+    const id = input.id ?? `trace_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO task_traces (
+          id, task_id, seq, kind, title, detail, tool_name, url, is_error, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.taskId,
+        seq,
+        input.kind,
+        input.title,
+        input.detail ?? null,
+        input.toolName ?? null,
+        input.url ?? null,
+        input.isError ? 1 : 0,
+        createdAt,
+      );
+    return {
+      id,
+      taskId: input.taskId,
+      seq,
+      kind: input.kind,
+      title: input.title,
+      ...(input.detail !== undefined ? { detail: input.detail } : {}),
+      ...(input.toolName !== undefined ? { toolName: input.toolName } : {}),
+      ...(input.url !== undefined ? { url: input.url } : {}),
+      ...(input.isError ? { isError: true } : {}),
+      createdAt,
+    };
+  }
+
+  listTaskTraces(taskId: TaskId, limit = 150): TaskTraceEntry[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+          SELECT * FROM task_traces WHERE task_id = ? ORDER BY seq DESC LIMIT ?
+        ) ORDER BY seq ASC`,
+      )
+      .all(taskId, limit) as unknown as Array<{
+      id: string;
+      task_id: string;
+      seq: number;
+      kind: TaskTraceKind;
+      title: string;
+      detail: string | null;
+      tool_name: string | null;
+      url: string | null;
+      is_error: number;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      taskId: parseTaskId(row.task_id),
+      seq: row.seq,
+      kind: row.kind,
+      title: row.title,
+      ...(row.detail !== null ? { detail: row.detail } : {}),
+      ...(row.tool_name !== null ? { toolName: row.tool_name } : {}),
+      ...(row.url !== null ? { url: row.url } : {}),
+      ...(row.is_error === 1 ? { isError: true } : {}),
+      createdAt: row.created_at,
+    }));
+  }
+
+  listRecentTaskTraces(tasks: readonly TaskRecord[], perTaskLimit = 100): Record<string, TaskTraceEntry[]> {
+    const out: Record<string, TaskTraceEntry[]> = {};
+    for (const task of tasks) {
+      const entries = this.listTaskTraces(task.id, perTaskLimit);
+      if (entries.length > 0) {
+        out[task.id] = entries;
+      }
+    }
+    return out;
   }
 
   getPolicy(): PolicyConfig {

@@ -9,8 +9,10 @@ import {
   parseTaskId,
 } from "./ids.ts";
 import {
+  expectBoolean,
   expectEnum,
   expectNonEmptyString,
+  expectNumber,
   expectObject,
   expectOptionalString,
   expectString,
@@ -52,6 +54,7 @@ export type TaskState =
       readonly startedAt: string;
       readonly stepSummary: string;
       readonly latestScreenshotBase64?: string;
+      readonly latestUrl?: string;
     }
   | {
       readonly kind: "awaiting_approval";
@@ -152,11 +155,13 @@ export function parseTaskState(raw: unknown): TaskState {
         obj["latestScreenshotBase64"],
         "TaskState.latestScreenshotBase64",
       );
+      const latestUrl = expectOptionalString(obj["latestUrl"], "TaskState.latestUrl");
       return {
         kind: "running",
         startedAt: expectString(obj["startedAt"], "TaskState.startedAt"),
         stepSummary: expectString(obj["stepSummary"], "TaskState.stepSummary"),
         ...(screenshot !== undefined ? { latestScreenshotBase64: screenshot } : {}),
+        ...(latestUrl !== undefined ? { latestUrl } : {}),
       };
     }
     case "awaiting_approval": {
@@ -203,6 +208,53 @@ export function parseTaskState(raw: unknown): TaskState {
     default:
       throw new Error(`Invalid TaskState.kind: ${kind}`);
   }
+}
+
+export const TASK_TRACE_KINDS = [
+  "status",
+  "planning",
+  "tool_call",
+  "tool_result",
+  "browser_action",
+  "cli_output",
+  "approval",
+  "error",
+] as const;
+export type TaskTraceKind = (typeof TASK_TRACE_KINDS)[number];
+
+export interface TaskTraceEntry {
+  readonly id: string;
+  readonly taskId: TaskId;
+  readonly seq: number;
+  readonly kind: TaskTraceKind;
+  readonly title: string;
+  readonly detail?: string;
+  readonly toolName?: string;
+  readonly url?: string;
+  readonly isError?: boolean;
+  readonly createdAt: string;
+}
+
+/** Parses an external TaskTraceEntry payload. */
+export function parseTaskTraceEntry(raw: unknown): TaskTraceEntry {
+  const obj = expectObject(raw, "TaskTraceEntry");
+  const detail = expectOptionalString(obj["detail"], "TaskTraceEntry.detail");
+  const toolName = expectOptionalString(obj["toolName"], "TaskTraceEntry.toolName");
+  const url = expectOptionalString(obj["url"], "TaskTraceEntry.url");
+  const isError =
+    obj["isError"] === undefined ? undefined : expectBoolean(obj["isError"], "TaskTraceEntry.isError");
+  return {
+    id: expectNonEmptyString(obj["id"], "TaskTraceEntry.id"),
+    taskId: parseTaskId(obj["taskId"]),
+    seq: expectNumber(obj["seq"], "TaskTraceEntry.seq"),
+    kind: expectEnum(obj["kind"], TASK_TRACE_KINDS, "TaskTraceEntry.kind"),
+    title: expectNonEmptyString(obj["title"], "TaskTraceEntry.title"),
+    ...(detail !== undefined ? { detail } : {}),
+    ...(toolName !== undefined ? { toolName } : {}),
+    ...(url !== undefined ? { url } : {}),
+    ...(isError !== undefined ? { isError } : {}),
+    createdAt: expectString(obj["createdAt"], "TaskTraceEntry.createdAt"),
+  };
 }
 
 /** Parses an external TaskRecord payload into a validated TaskRecord. */

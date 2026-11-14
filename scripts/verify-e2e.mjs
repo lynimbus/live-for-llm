@@ -204,6 +204,10 @@ try {
       () => liveApp.texts().some((line) => line.includes("已完成：Verified title: Live Browser Target")),
       { timeout: 5000 },
     );
+    await liveApp.press("text:点击查看实时操作 ›");
+    await liveApp.waitFor("id:task-detail-view");
+    await liveApp.waitFor("id:task-detail-browser-shot");
+    await liveApp.press("id:task-detail-back-btn");
     await liveApp.press("id:avatar-settings-btn");
     await liveApp.waitFor("id:settings-page");
     await liveApp.press("id:settings-tab-memories");

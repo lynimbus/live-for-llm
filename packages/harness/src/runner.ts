@@ -4,7 +4,18 @@ import type {
   ConversationId,
   TaskId,
   TaskKind,
+  TaskTraceKind,
 } from "@live-for-llm/protocol";
+
+export interface TaskTraceInput {
+  readonly kind: TaskTraceKind;
+  readonly title: string;
+  readonly detail?: string;
+  readonly toolName?: string;
+  readonly url?: string;
+  readonly isError?: boolean;
+  readonly screenshotBase64?: string;
+}
 
 export interface ApprovalPromptInput {
   readonly actionSummary: string;
@@ -25,7 +36,8 @@ export interface TaskRunContext {
   readonly goal: string;
   readonly metadata?: Record<string, unknown>;
   readonly signal: AbortSignal;
-  reportProgress(stepSummary: string, screenshotBase64?: string): void;
+  reportProgress(stepSummary: string, screenshotBase64?: string, url?: string): void;
+  reportTrace?(entry: TaskTraceInput): void;
   requestApproval(input: ApprovalPromptInput): Promise<ApprovalDecision>;
   requestUserPause(input: UserPauseInput): Promise<void>;
 }

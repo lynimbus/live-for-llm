@@ -103,6 +103,20 @@ function makeSnapshot() {
         updatedAt: "2026-11-15T04:55:00.000Z",
       },
     ],
+    taskTraces: {
+      task_done_1: [
+        {
+          id: "tr_1",
+          taskId: "task_done_1",
+          seq: 1,
+          kind: "tool_call",
+          toolName: "run_shell_command",
+          title: "Call run_shell_command",
+          detail: '{"command":"jj status"}',
+          createdAt: "2026-11-15T04:50:05.000Z",
+        },
+      ],
+    },
     policy: {
       mode: "trust_auto",
       autoApproveDomains: [],
@@ -219,13 +233,18 @@ test("ChatGPT-style workspace, right-click own-message recall, sessions sidebar,
   await app.waitFor("id:welcome-card");
   expect(postedCommands.some((c) => c.kind === "conversation.create")).toBe(true);
 
-  // Open Tasks sidebar via icon button and verify expandable accordion rows.
+  // Open Tasks sidebar via icon button, expand accordion row, and click content to open Live Task View.
   await app.press("id:toggle-drawer");
   await app.waitFor("id:tasks-sidebar");
   expect(app.shows("id:task-details-task_done_1")).toBe(false);
   await app.press("id:task-toggle-task_done_1");
   await app.waitFor("id:task-details-task_done_1");
   expect(app.texts().some((line) => line.includes("Workspace clean."))).toBe(true);
+  await app.press("id:task-open-detail-task_done_1");
+  await app.waitFor("id:task-detail-view");
+  await app.waitFor("id:trace-item-tr_1");
+  await app.press("id:task-detail-back-btn");
+  await app.waitFor("id:welcome-card");
 
   // Click avatar to enter Settings page.
   await app.press("id:avatar-settings-btn");
@@ -253,13 +272,19 @@ test("ChatGPT-style workspace, right-click own-message recall, sessions sidebar,
 
   await app.press("id:settings-tab-harness");
   await app.waitFor("id:harness-codex");
+  expect(app.texts()).not.toContain("内置执行器（浏览器 + 本地工具）");
+  expect(app.shows("id:browser-daemon")).toBe(true);
   await app.press("id:harness-codex");
+  await app.press("id:browser-follow_harness");
   await app.press("id:save-harness-btn");
   expect(
     postedCommands.some((c) => {
       if (c.kind !== "harness.update") return false;
-      const settings = c.settings as { defaultBackend?: string } | undefined;
-      return settings?.defaultBackend === "codex";
+      const settings = c.settings as { defaultBackend?: string; browserBackend?: string } | undefined;
+      return (
+        settings?.defaultBackend === "codex" &&
+        settings?.browserBackend === "follow_harness"
+      );
     }),
   ).toBe(true);
 

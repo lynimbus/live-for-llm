@@ -15,10 +15,66 @@ export function createBrowserTools(params: {
   readonly profileId: BrowserProfileId;
   readonly getPolicy: () => PolicyConfig;
 }): HarnessTool[] {
+  const emitSnap = (
+    ctx: Parameters<HarnessTool["execute"]>[1],
+    label: string,
+    snap: Awaited<ReturnType<PersistentBrowserManager["captureSnapshot"]>>,
+  ) => {
+    ctx.reportProgress(label, snap.screenshotBase64, snap.url);
+    ctx.reportTrace?.({
+      kind: "browser_action",
+      title: label,
+      url: snap.url,
+      ...(snap.title ? { detail: snap.title } : {}),
+    });
+  };
+
+  const searchTool: HarnessTool = {
+    spec: {
+      name: "browser_search",
+      description:
+        "Search the web directly in the persistent browser and return ranked result titles, URLs, and snippet text.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          engine: { type: "string", enum: ["bing", "duckduckgo"] },
+        },
+        required: ["query"],
+      },
+    },
+    riskTier: "read_only",
+    async execute(args, ctx) {
+      const query = typeof args["query"] === "string" ? args["query"].trim() : "";
+      if (!query) throw new Error("browser_search requires query");
+      const engine = args["engine"] === "duckduckgo" ? "duckduckgo" : "bing";
+      const searchUrl =
+        engine === "duckduckgo"
+          ? `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+          : `https://cn.bing.com/search?q=${encodeURIComponent(query)}`;
+
+      const snap = await params.browser.navigate({ profileId: params.profileId, url: searchUrl });
+      emitSnap(ctx, `Searched "${query}" (${engine})`, snap);
+
+      const links = snap.interactiveElements
+        .filter((el) => el.href && el.text && !el.href.includes("bing.com/aclick"))
+        .slice(0, 15)
+        .map((el) => ({ title: el.text, url: el.href }));
+
+      return JSON.stringify({
+        url: snap.url,
+        title: snap.title,
+        results: links,
+        textExcerpt: snap.textExcerpt,
+      });
+    },
+  };
+
   const navigateTool: HarnessTool = {
     spec: {
       name: "browser_navigate",
-      description: "Open a URL in the persistent logged-in Chromium profile and return page text, interactive selectors, and screenshot.",
+      description:
+        "Open a URL in the persistent logged-in Chromium profile and return page text, links/selectors, scroll info, and screenshot.",
       parameters: {
         type: "object",
         properties: {
@@ -32,12 +88,14 @@ export function createBrowserTools(params: {
       const url = typeof args["url"] === "string" ? args["url"] : "";
       if (!url) throw new Error("browser_navigate requires url");
       const snap = await params.browser.navigate({ profileId: params.profileId, url });
-      ctx.reportProgress(`Loaded ${snap.title || snap.url}`, snap.screenshotBase64);
+      emitSnap(ctx, `Loaded ${snap.title || snap.url}`, snap);
       return JSON.stringify({
         url: snap.url,
         title: snap.title,
+        scrollY: snap.scrollY,
+        scrollHeight: snap.scrollHeight,
         textExcerpt: snap.textExcerpt,
-        interactiveElements: snap.interactiveElements.slice(0, 20),
+        interactiveElements: snap.interactiveElements,
       });
     },
   };
@@ -45,7 +103,8 @@ export function createBrowserTools(params: {
   const clickTool: HarnessTool = {
     spec: {
       name: "browser_click",
-      description: "Click a CSS selector on the current page. Use riskTier='external_send' for publish/send/post buttons.",
+      description:
+        "Click a CSS selector (or [data-livia-ref]) on the current page. Use riskTier='external_send' for publish/send/post buttons.",
       parameters: {
         type: "object",
         properties: {
@@ -75,12 +134,18 @@ export function createBrowserTools(params: {
         requestApproval: (req) => ctx.requestApproval(req),
         run: async (page) => {
           await page.click(selector, { timeout: 10_000 });
+          await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
         },
       });
 
       const snap = await params.browser.captureSnapshot({ profileId: params.profileId });
-      ctx.reportProgress(`Clicked ${selector}`, snap.screenshotBase64);
-      return JSON.stringify({ url: snap.url, title: snap.title, textExcerpt: snap.textExcerpt });
+      emitSnap(ctx, `Clicked ${selector}`, snap);
+      return JSON.stringify({
+        url: snap.url,
+        title: snap.title,
+        textExcerpt: snap.textExcerpt,
+        interactiveElements: snap.interactiveElements.slice(0, 25),
+      });
     },
   };
 
@@ -117,15 +182,78 @@ export function createBrowserTools(params: {
       });
 
       const snap = await params.browser.captureSnapshot({ profileId: params.profileId });
-      ctx.reportProgress(`Filled ${selector}`, snap.screenshotBase64);
+      emitSnap(ctx, `Filled ${selector}`, snap);
       return `Filled ${selector}`;
+    },
+  };
+
+  const scrollTool: HarnessTool = {
+    spec: {
+      name: "browser_scroll",
+      description: "Scroll the current browser page (down, up, top, bottom) and read updated text.",
+      parameters: {
+        type: "object",
+        properties: {
+          direction: { type: "string", enum: ["down", "up", "top", "bottom"] },
+        },
+      },
+    },
+    riskTier: "read_only",
+    async execute(args, ctx) {
+      const raw = args["direction"];
+      const direction =
+        raw === "up" || raw === "top" || raw === "bottom" ? raw : "down";
+      const snap = await params.browser.scroll({ profileId: params.profileId, direction });
+      emitSnap(ctx, `Scrolled ${direction}`, snap);
+      return JSON.stringify({
+        url: snap.url,
+        scrollY: snap.scrollY,
+        scrollHeight: snap.scrollHeight,
+        textExcerpt: snap.textExcerpt,
+      });
+    },
+  };
+
+  const pressKeyTool: HarnessTool = {
+    spec: {
+      name: "browser_press_key",
+      description: "Press a keyboard key in the browser (e.g. Enter, Escape, Tab).",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string" },
+        },
+        required: ["key"],
+      },
+    },
+    riskTier: "local_write",
+    async execute(args, ctx) {
+      const key = typeof args["key"] === "string" ? args["key"] : "Enter";
+      const snap = await params.browser.pressKey({ profileId: params.profileId, key });
+      emitSnap(ctx, `Pressed ${key}`, snap);
+      return JSON.stringify({ url: snap.url, title: snap.title, textExcerpt: snap.textExcerpt });
+    },
+  };
+
+  const backTool: HarnessTool = {
+    spec: {
+      name: "browser_back",
+      description: "Navigate back to the previous page in browser history.",
+      parameters: { type: "object", properties: {} },
+    },
+    riskTier: "read_only",
+    async execute(_args, ctx) {
+      const snap = await params.browser.goBack({ profileId: params.profileId });
+      emitSnap(ctx, `Navigated back`, snap);
+      return JSON.stringify({ url: snap.url, title: snap.title, textExcerpt: snap.textExcerpt });
     },
   };
 
   const humanLoginTool: HarnessTool = {
     spec: {
       name: "browser_request_human_login",
-      description: "Pause task and ask the user to log in or solve 2FA/CAPTCHA in a visible browser window.",
+      description:
+        "Pause task and ask the user to log in or solve 2FA/CAPTCHA in a visible browser window.",
       parameters: {
         type: "object",
         properties: {
@@ -144,10 +272,19 @@ export function createBrowserTools(params: {
       await ctx.requestUserPause({ reason: "login_required", instructions });
       await params.browser.openSession({ profileId: params.profileId, headless: true });
       const snap = await params.browser.captureSnapshot({ profileId: params.profileId });
-      ctx.reportProgress("Resumed after user login", snap.screenshotBase64);
+      emitSnap(ctx, "Resumed after user login", snap);
       return `User resumed session on ${snap.url}`;
     },
   };
 
-  return [navigateTool, clickTool, fillTool, humanLoginTool];
+  return [
+    searchTool,
+    navigateTool,
+    clickTool,
+    fillTool,
+    scrollTool,
+    pressKeyTool,
+    backTool,
+    humanLoginTool,
+  ];
 }

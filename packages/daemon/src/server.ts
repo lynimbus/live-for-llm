@@ -32,6 +32,9 @@ import {
   parseBrowserProfileId,
   parseClientCommand,
   parseConversationId,
+  parseTaskId,
+  type TaskId,
+  type TaskKind,
 } from "@live-for-llm/protocol";
 import { WebSocket, WebSocketServer } from "ws";
 import {
@@ -62,6 +65,26 @@ function parseCustomCliArgs(rawArgs: string | undefined, goal: string): string[]
     resolved.push(goal);
   }
   return resolved;
+}
+
+function buildCliTaskPrompt(goal: string, taskKind: TaskKind): string {
+  if (taskKind !== "browser_research" && taskKind !== "browser_post") {
+    return goal;
+  }
+  return [
+    goal,
+    "",
+    "Browser Bridge Instructions:",
+    "- You can drive the persistent Playwright Chromium browser via HTTP POST endpoints at $LIVE_FOR_LLM_DAEMON_URL (include header 'Authorization: Bearer $LIVE_FOR_LLM_TOKEN' if $LIVE_FOR_LLM_TOKEN is non-empty, and JSON body {\"taskId\": \"$LIVE_FOR_LLM_TASK_ID\", ...}).",
+    "- Available endpoints:",
+    "  * POST /api/browser/search {\"taskId\",\"query\",\"engine\":\"bing\"|\"duckduckgo\"}",
+    "  * POST /api/browser/navigate {\"taskId\",\"url\"}",
+    "  * POST /api/browser/click {\"taskId\",\"selector\"}",
+    "  * POST /api/browser/fill {\"taskId\",\"selector\",\"value\"}",
+    "  * POST /api/browser/press {\"taskId\",\"key\"}",
+    "  * POST /api/browser/scroll {\"taskId\",\"direction\":\"down\"|\"up\"|\"top\"|\"bottom\"}",
+    "  * POST /api/browser/snapshot {\"taskId\"}",
+  ].join("\n");
 }
 
 export interface CompanionDaemonOptions {
@@ -161,17 +184,37 @@ export class CompanionDaemon {
       getPolicy: () => this.store.getPolicy(),
     });
     const resolveCwd = () => this.config.harness.workingDir || undefined;
+    const resolveCliEnv = (ctx: { readonly taskId: TaskId }): Record<string, string | undefined> => ({
+      LIVE_FOR_LLM_DAEMON_URL: `http://${this.config.host}:${this.actualPort || this.config.port}`,
+      LIVE_FOR_LLM_TASK_ID: ctx.taskId,
+      ...(this.config.authToken ? { LIVE_FOR_LLM_TOKEN: this.config.authToken } : {}),
+    });
 
     const registry = new TaskRunnerRegistry()
       .register(
         new BuiltinAgentRunner({
-          id: "builtin-agent",
-          label: "Built-in Browser & Workspace Agent",
+          id: "browser-runner",
+          label: "Daemon Browser Engine",
           router,
           getPolicy: () => this.store.getPolicy(),
-          tools: [...browserTools, ...utilityTools],
+          tools: browserTools,
+          supportedKinds: ["browser_research", "browser_post"],
+          maxTurns: 24,
           systemPrompt:
-            "You are the background execution harness. You have both persistent browser automation tools (browser_*) and local workspace/utility tools (get_current_time, list_directory, read_local_file, write_local_file, run_shell_command). Use the right tools for the goal and return a concise factual summary.",
+            "You are the dedicated browser automation runner. For topic research, call browser_search first, open the most relevant 1-3 result URLs with browser_navigate (reading with browser_scroll if needed), and conclude promptly with a clear, factual summary.",
+        }),
+      )
+      .register(
+        new BuiltinAgentRunner({
+          id: "builtin-agent",
+          label: "Built-in Tool Runner",
+          router,
+          getPolicy: () => this.store.getPolicy(),
+          tools: utilityTools,
+          supportedKinds: ["harness_coding", "shell_utility"],
+          maxTurns: 24,
+          systemPrompt:
+            "You are the local workspace and utility execution harness. Use workspace/shell tools accurately for the goal and return a concise factual summary.",
         }),
       )
       .register(
@@ -180,11 +223,14 @@ export class CompanionDaemon {
           label: "Codex CLI",
           command: "codex",
           cwd: resolveCwd,
-          buildArgs: (goal) =>
-            this.store.getPolicy().mode === "yolo"
-              ? ["exec", "--dangerously-bypass-approvals-and-sandbox", goal]
-              : ["exec", "--full-auto", goal],
-          supportedKinds: ["harness_coding", "shell_utility"],
+          env: resolveCliEnv,
+          buildArgs: (goal, ctx) => {
+            const prompt = buildCliTaskPrompt(goal, ctx.taskKind);
+            return this.store.getPolicy().mode === "yolo"
+              ? ["exec", "--dangerously-bypass-approvals-and-sandbox", prompt]
+              : ["exec", "--full-auto", prompt];
+          },
+          supportedKinds: ["harness_coding", "shell_utility", "browser_research", "browser_post"],
         }),
       )
       .register(
@@ -193,21 +239,25 @@ export class CompanionDaemon {
           label: "Claude Code CLI",
           command: "claude",
           cwd: resolveCwd,
-          buildArgs: (goal) =>
-            this.store.getPolicy().mode === "yolo"
-              ? ["-p", "--dangerously-skip-permissions", goal]
-              : ["-p", goal],
-          supportedKinds: ["harness_coding", "shell_utility"],
+          env: resolveCliEnv,
+          buildArgs: (goal, ctx) => {
+            const prompt = buildCliTaskPrompt(goal, ctx.taskKind);
+            return this.store.getPolicy().mode === "yolo"
+              ? ["-p", "--dangerously-skip-permissions", prompt]
+              : ["-p", prompt];
+          },
+          supportedKinds: ["harness_coding", "shell_utility", "browser_research", "browser_post"],
         }),
       )
       .register(
         new ExternalCliRunner({
           id: "pi-cli",
-          label: "External Pi Harness",
+          label: "Pi CLI",
           command: "pi",
           cwd: resolveCwd,
-          buildArgs: (goal) => ["--print", goal],
-          supportedKinds: ["harness_coding", "shell_utility"],
+          env: resolveCliEnv,
+          buildArgs: (goal, ctx) => ["--print", buildCliTaskPrompt(goal, ctx.taskKind)],
+          supportedKinds: ["harness_coding", "shell_utility", "browser_research", "browser_post"],
         }),
       )
       .register(
@@ -216,8 +266,9 @@ export class CompanionDaemon {
           label: "OpenCode CLI",
           command: "opencode",
           cwd: resolveCwd,
-          buildArgs: (goal) => ["run", goal],
-          supportedKinds: ["harness_coding", "shell_utility"],
+          env: resolveCliEnv,
+          buildArgs: (goal, ctx) => ["run", buildCliTaskPrompt(goal, ctx.taskKind)],
+          supportedKinds: ["harness_coding", "shell_utility", "browser_research", "browser_post"],
         }),
       )
       .register(
@@ -232,8 +283,10 @@ export class CompanionDaemon {
             return cmd;
           },
           cwd: resolveCwd,
-          buildArgs: (goal) => parseCustomCliArgs(this.config.harness.customArgs, goal),
-          supportedKinds: ["harness_coding", "shell_utility"],
+          env: resolveCliEnv,
+          buildArgs: (goal, ctx) =>
+            parseCustomCliArgs(this.config.harness.customArgs, buildCliTaskPrompt(goal, ctx.taskKind)),
+          supportedKinds: ["harness_coding", "shell_utility", "browser_research", "browser_post"],
         }),
       );
 
@@ -474,19 +527,160 @@ export class CompanionDaemon {
           const convId = parseConversationId(
             url.searchParams.get("conversationId") ?? "conv_main",
           );
+          const tasks = this.store.listTasks(30);
           writeJson(res, 200, {
             conversationId: convId,
             conversations: this.store.listConversations(),
             messages: this.store.listChatMessages(convId, 100),
             memories: this.store.listMemories({ limit: 100 }),
             relationship: this.store.getRelationshipState(),
-            tasks: this.store.listTasks(30),
+            tasks,
+            taskTraces: this.store.listRecentTaskTraces(tasks),
             policy: this.store.getPolicy(),
             proactiveRules: this.store.listProactiveRules().map((r) => r.rule),
             modelSettings: summarizeModelSettings(this.config.models),
             harnessSettings: this.config.harness,
           });
           return;
+        }
+
+        if (url.pathname.startsWith("/api/browser/") && req.method === "POST") {
+          const action = url.pathname.slice("/api/browser/".length);
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const profileId = parseBrowserProfileId("default_user");
+          const rawTaskId = typeof body["taskId"] === "string" ? body["taskId"].trim() : "";
+          const taskId = rawTaskId ? parseTaskId(rawTaskId) : undefined;
+
+          const recordBrowserStep = (
+            label: string,
+            snap: Awaited<ReturnType<PersistentBrowserManager["captureSnapshot"]>>,
+          ) => {
+            if (!taskId) return;
+            const entry = this.store.appendTaskTrace({
+              taskId,
+              kind: "browser_action",
+              title: label,
+              url: snap.url,
+              ...(snap.title ? { detail: snap.title } : {}),
+            });
+            this.broadcastDirect({ kind: "task.trace", entry });
+            this.broadcastDirect({
+              kind: "browser.screenshot",
+              taskId,
+              mimeType: "image/jpeg",
+              base64: snap.screenshotBase64,
+              url: snap.url,
+              capturedAt: snap.capturedAt,
+            });
+          };
+
+          if (action === "search") {
+            const query = typeof body["query"] === "string" ? body["query"].trim() : "";
+            if (!query) {
+              writeJson(res, 400, { error: "Missing query" });
+              return;
+            }
+            const engine = body["engine"] === "duckduckgo" ? "duckduckgo" : "bing";
+            const searchUrl =
+              engine === "duckduckgo"
+                ? `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+                : `https://cn.bing.com/search?q=${encodeURIComponent(query)}`;
+            const snap = await this.browser.navigate({ profileId, url: searchUrl });
+            recordBrowserStep(`Searched "${query}" (${engine})`, snap);
+            writeJson(res, 200, {
+              url: snap.url,
+              title: snap.title,
+              results: snap.interactiveElements
+                .filter((el) => el.href && el.text)
+                .slice(0, 15),
+              textExcerpt: snap.textExcerpt,
+            });
+            return;
+          }
+          if (action === "navigate") {
+            const targetUrl = typeof body["url"] === "string" ? body["url"].trim() : "";
+            if (!targetUrl) {
+              writeJson(res, 400, { error: "Missing url" });
+              return;
+            }
+            const snap = await this.browser.navigate({ profileId, url: targetUrl });
+            recordBrowserStep(`Loaded ${snap.title || snap.url}`, snap);
+            writeJson(res, 200, {
+              url: snap.url,
+              title: snap.title,
+              scrollY: snap.scrollY,
+              scrollHeight: snap.scrollHeight,
+              textExcerpt: snap.textExcerpt,
+              interactiveElements: snap.interactiveElements,
+            });
+            return;
+          }
+          if (action === "click") {
+            const selector = typeof body["selector"] === "string" ? body["selector"] : "";
+            if (!selector) {
+              writeJson(res, 400, { error: "Missing selector" });
+              return;
+            }
+            const page = await this.browser.openSession({ profileId });
+            await page.click(selector, { timeout: 10_000 });
+            await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+            const snap = await this.browser.captureSnapshot({ profileId });
+            recordBrowserStep(`Clicked ${selector}`, snap);
+            writeJson(res, 200, {
+              url: snap.url,
+              title: snap.title,
+              textExcerpt: snap.textExcerpt,
+              interactiveElements: snap.interactiveElements.slice(0, 25),
+            });
+            return;
+          }
+          if (action === "fill") {
+            const selector = typeof body["selector"] === "string" ? body["selector"] : "";
+            const value = typeof body["value"] === "string" ? body["value"] : "";
+            if (!selector) {
+              writeJson(res, 400, { error: "Missing selector" });
+              return;
+            }
+            const page = await this.browser.openSession({ profileId });
+            await page.fill(selector, value, { timeout: 10_000 });
+            const snap = await this.browser.captureSnapshot({ profileId });
+            recordBrowserStep(`Filled ${selector}`, snap);
+            writeJson(res, 200, { ok: true, url: snap.url });
+            return;
+          }
+          if (action === "press") {
+            const key = typeof body["key"] === "string" ? body["key"] : "Enter";
+            const snap = await this.browser.pressKey({ profileId, key });
+            recordBrowserStep(`Pressed ${key}`, snap);
+            writeJson(res, 200, { url: snap.url, title: snap.title, textExcerpt: snap.textExcerpt });
+            return;
+          }
+          if (action === "scroll") {
+            const dir = body["direction"];
+            const direction = dir === "up" || dir === "top" || dir === "bottom" ? dir : "down";
+            const snap = await this.browser.scroll({ profileId, direction });
+            recordBrowserStep(`Scrolled ${direction}`, snap);
+            writeJson(res, 200, {
+              url: snap.url,
+              scrollY: snap.scrollY,
+              scrollHeight: snap.scrollHeight,
+              textExcerpt: snap.textExcerpt,
+            });
+            return;
+          }
+          if (action === "snapshot") {
+            const snap = await this.browser.captureSnapshot({ profileId });
+            recordBrowserStep(`Captured snapshot`, snap);
+            writeJson(res, 200, {
+              url: snap.url,
+              title: snap.title,
+              scrollY: snap.scrollY,
+              scrollHeight: snap.scrollHeight,
+              textExcerpt: snap.textExcerpt,
+              interactiveElements: snap.interactiveElements,
+            });
+            return;
+          }
         }
 
         if (url.pathname === "/api/memories/export" && req.method === "POST") {
