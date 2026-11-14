@@ -25,6 +25,7 @@
     "@types/ws": "^8.5.14"
   },
   "scripts": {
+    "start": "node --experimental-strip-types src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.ts"
   }

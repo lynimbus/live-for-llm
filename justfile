@@ -10,3 +10,9 @@ test:
 
 e2e:
   node scripts/verify-e2e.mjs
+
+daemon:
+  pnpm --filter @live-for-llm/daemon start
+
+desktop:
+  pnpm --filter @live-for-llm/desktop start

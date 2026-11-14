@@ -7,7 +7,9 @@
   "scripts": {
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present test"
+    "test": "pnpm -r --if-present test",
+    "daemon": "pnpm --filter @live-for-llm/daemon start",
+    "desktop": "pnpm --filter @live-for-llm/desktop start"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
