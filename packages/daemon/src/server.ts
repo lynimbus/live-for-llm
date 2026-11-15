@@ -308,6 +308,8 @@ export class CompanionDaemon {
       }
     };
 
+    const hasDisplay = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+
     this.runtime = new CompanionRuntime({
       router,
       store: this.store,
@@ -315,6 +317,18 @@ export class CompanionDaemon {
       emit: broadcast,
       enableEmbeddings: this.config.enableEmbeddings,
       getDefaultRunnerId: (taskKind) => resolveConfiguredRunnerId(this.config.harness, taskKind),
+      onTaskPausedForUser: async (task) => {
+        const mode = this.browser.getSessionMode(profileId);
+        if (task.taskKind.startsWith("browser_") && hasDisplay && (!mode.open || mode.headless)) {
+          await this.browser.openSession({ profileId, headless: false }).catch(() => undefined);
+        }
+      },
+      onTaskResumedFromUser: async (task) => {
+        const mode = this.browser.getSessionMode(profileId);
+        if (task.taskKind.startsWith("browser_") && mode.open && !mode.headless) {
+          await this.browser.openSession({ profileId, headless: true }).catch(() => undefined);
+        }
+      },
     });
 
     this.scheduler = new ProactiveScheduler({
@@ -335,6 +349,7 @@ export class CompanionDaemon {
         await this.runtime.handleUserMessage({
           conversationId: cmd.conversationId,
           content: cmd.content,
+          ...(cmd.ephemeralHint ? { ephemeralHint: cmd.ephemeralHint } : {}),
         });
         return;
       }

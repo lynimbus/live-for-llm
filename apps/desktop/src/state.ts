@@ -82,7 +82,7 @@ export interface CompanionUiStore {
   createConversation(title?: string): Promise<boolean>;
   renameConversation(id: ConversationId, title: string): Promise<boolean>;
   deleteConversation(id: ConversationId): Promise<boolean>;
-  sendChat(text: string): Promise<boolean>;
+  sendChat(text: string, ephemeralHint?: string): Promise<boolean>;
   recallMessage(messageId: MessageId): Promise<boolean>;
   deleteMessages(messageIds: readonly MessageId[]): Promise<boolean>;
   decideApproval(approvalId: ApprovalId, decision: "approved" | "denied"): Promise<void>;
@@ -487,15 +487,17 @@ export function createCompanionUiStore(options?: {
       }
       return true;
     },
-    async sendChat(text: string): Promise<boolean> {
+    async sendChat(text: string, ephemeralHint?: string): Promise<boolean> {
       const trimmed = text.trim();
       if (!trimmed) return false;
+      const hint = ephemeralHint?.trim();
       const targetConv = conversationId();
       return runAction(async () => {
         await transport.sendCommand({
           kind: "chat.send",
           conversationId: targetConv,
           content: trimmed,
+          ...(hint ? { ephemeralHint: hint } : {}),
         });
       });
     },

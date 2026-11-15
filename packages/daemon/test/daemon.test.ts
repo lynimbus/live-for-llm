@@ -356,6 +356,19 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
       "pi-cli",
     );
 
+    // Burn-after-reading Pilulier ephemeralHint is never persisted to SQLite chat_messages
+    await daemon.handleCommand({
+      kind: "chat.send",
+      conversationId: "conv_side" as never,
+      content: "今天工作累了",
+      ephemeralHint: "Only comfort me softly in one sentence.",
+    });
+    const sideMsgs = daemon.store.listChatMessages("conv_side" as never);
+    assert.equal(
+      sideMsgs.some((m) => m.content.includes("Only comfort me softly")),
+      false,
+    );
+
     ws.close();
   } finally {
     await daemon.stop();

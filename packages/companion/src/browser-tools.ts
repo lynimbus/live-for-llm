@@ -2,6 +2,22 @@ import type { PersistentBrowserManager } from "@live-for-llm/browser";
 import type { HarnessTool } from "@live-for-llm/harness";
 import { ACTION_RISK_TIERS, type ActionRiskTier, type BrowserProfileId, type PolicyConfig } from "@live-for-llm/protocol";
 
+const AUTH_URL_RE = /(\/login|\/signin|\/auth|\/sso|\/oauth|\/challenge|\/captcha|\/verify)/i;
+const AUTH_TEXT_RE = /(sign in to|log in to|two-factor|2fa|verification code|verify you are human|captcha|cloudflare|turnstile|recaptcha|hcaptcha|请登录|账号登录|扫码登录|安全验证|人机验证|验证码)/i;
+
+/** Passively detects login walls, 2FA, or CAPTCHA gates so the planner hands off to the user via `browser_request_human_login`. */
+export function detectAuthOrChallengeHint(snap: {
+  readonly url: string;
+  readonly title?: string;
+  readonly textExcerpt?: string;
+}): string | undefined {
+  const urlMatch = AUTH_URL_RE.test(snap.url);
+  const body = `${snap.title ?? ""}\n${snap.textExcerpt ?? ""}`;
+  const textMatch = AUTH_TEXT_RE.test(body);
+  if (!urlMatch && !textMatch) return undefined;
+  return "Login wall, 2FA, or anti-bot verification detected. Do NOT attempt to bypass it; call `browser_request_human_login` so the user can complete it interactively.";
+}
+
 function parseRiskTier(raw: unknown, fallback: ActionRiskTier): ActionRiskTier {
   if (typeof raw === "string" && (ACTION_RISK_TIERS as readonly string[]).includes(raw)) {
     return raw as ActionRiskTier;
@@ -89,6 +105,7 @@ export function createBrowserTools(params: {
       if (!url) throw new Error("browser_navigate requires url");
       const snap = await params.browser.navigate({ profileId: params.profileId, url });
       emitSnap(ctx, `Loaded ${snap.title || snap.url}`, snap);
+      const authHint = detectAuthOrChallengeHint(snap);
       return JSON.stringify({
         url: snap.url,
         title: snap.title,
@@ -96,6 +113,13 @@ export function createBrowserTools(params: {
         scrollHeight: snap.scrollHeight,
         textExcerpt: snap.textExcerpt,
         interactiveElements: snap.interactiveElements,
+        ...(authHint
+          ? {
+              authOrChallengeDetected: true,
+              recommendedTool: "browser_request_human_login",
+              hint: authHint,
+            }
+          : {}),
       });
     },
   };
@@ -140,11 +164,19 @@ export function createBrowserTools(params: {
 
       const snap = await params.browser.captureSnapshot({ profileId: params.profileId });
       emitSnap(ctx, `Clicked ${selector}`, snap);
+      const authHint = detectAuthOrChallengeHint(snap);
       return JSON.stringify({
         url: snap.url,
         title: snap.title,
         textExcerpt: snap.textExcerpt,
         interactiveElements: snap.interactiveElements.slice(0, 25),
+        ...(authHint
+          ? {
+              authOrChallengeDetected: true,
+              recommendedTool: "browser_request_human_login",
+              hint: authHint,
+            }
+          : {}),
       });
     },
   };

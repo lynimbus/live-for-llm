@@ -307,7 +307,31 @@ export function App(props: AppProps = {}) {
   }
 
   const composerText = signal("");
+  const selectedPillId = signal<string | null>(null);
   const turnCount = signal(0);
+
+  const pilulierPills = [
+    {
+      id: "brief",
+      labelKey: "pillBrief" as const,
+      hint: "Keep this reply brief and direct in 2-3 sentences max.",
+    },
+    {
+      id: "honest",
+      labelKey: "pillHonest" as const,
+      hint: "Be candid and direct without sugarcoating on this single reply.",
+    },
+    {
+      id: "action",
+      labelKey: "pillAction" as const,
+      hint: "Focus only on concrete, immediate next steps or commands.",
+    },
+    {
+      id: "warm",
+      labelKey: "pillWarm" as const,
+      hint: "Use an extra gentle, warm, and reassuring tone on this reply.",
+    },
+  ];
   const inFlightSends = signal(0);
   const selectionMode = signal(false);
   const selectedIds = signal<ReadonlySet<MessageId>>(new Set());
@@ -368,6 +392,13 @@ export function App(props: AppProps = {}) {
     if (!text) {
       return;
     }
+    const activePillId = selectedPillId();
+    const activeHint = activePillId
+      ? pilulierPills.find((p) => p.id === activePillId)?.hint
+      : undefined;
+    if (activePillId) {
+      selectedPillId.set(null);
+    }
     if (!overrideText) {
       composerText.set("");
     }
@@ -375,12 +406,13 @@ export function App(props: AppProps = {}) {
     animateLayout("spring");
     scrollChatToBottom(true);
     try {
-      const ok = await store.sendChat(text);
+      const ok = await store.sendChat(text, activeHint);
       if (ok) {
         turnCount.set(metrics.recordTurn());
         scrollChatToBottom(true);
       } else if (!overrideText && !composerText().trim()) {
         composerText.set(text);
+        if (activePillId) selectedPillId.set(activePillId);
       }
     } finally {
       inFlightSends.update((n) => Math.max(0, n - 1));
@@ -748,6 +780,21 @@ export function App(props: AppProps = {}) {
                       </If>
                       <If when={task().state.kind === "paused_for_user"}>
                         <Button
+                          testID="banner-inspect-btn"
+                          onPress={() => {
+                            animateLayout("ease");
+                            store.inspectedTaskId.set(task().id);
+                            store.activePage.set("task_detail");
+                          }}
+                          class="px-3 py-1 rounded-md border border-border bg-secondary"
+                          style={BUTTON_MOTION_STYLE}
+                          activeStyle={BUTTON_ACTIVE_STYLE}
+                        >
+                          <Text class="text-xs font-semibold text-foreground">
+                            {t("btnInspectBrowser")}
+                          </Text>
+                        </Button>
+                        <Button
                           testID="banner-resume-btn"
                           onPress={() => void store.resumeBrowserTask(task().id)}
                           class="px-3 py-1 rounded-md bg-primary"
@@ -926,45 +973,84 @@ export function App(props: AppProps = {}) {
                   <If
                     when={selectionMode()}
                     else={
-                      <View
-                        class="px-3.5 py-2 rounded-3xl bg-secondary border border-border"
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 8,
-                        }}
-                      >
-                        <Input
-                          testID="chat-input"
-                          value={composerText()}
-                          placeholder={t("inputPlaceholder", {
-                            name: store.relationship().companionName,
-                          })}
-                          submitBehavior="submit"
-                          onChange={(e) => composerText.set(e.value)}
-                          onSubmit={() => void submitMessage()}
-                          class="flex-1 px-1.5 py-1.5 bg-secondary text-sm text-foreground"
-                          style={{ minWidth: 0 }}
-                        />
-                        <Button
-                          testID="send-btn"
-                          onPress={() => void submitMessage()}
-                          class="rounded-full bg-primary"
-                          style={[
-                            BUTTON_MOTION_STYLE,
-                            {
-                              width: 32,
-                              height: 32,
-                              alignItems: "center",
-                              justifyContent: "center",
-                              flexShrink: 0,
-                            },
-                          ]}
-                          hoverStyle={{ opacity: 0.9 }}
-                          activeStyle={BUTTON_ACTIVE_STYLE}
+                      <View style={{ gap: 6 }}>
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            flexWrap: "wrap",
+                            gap: 6,
+                            paddingHorizontal: 4,
+                          }}
                         >
-                          <SendArrowIcon size={16} colorToken="primary-foreground" />
-                        </Button>
+                          {pilulierPills.map((pill) => {
+                            const active = () => selectedPillId() === pill.id;
+                            return (
+                              <Button
+                                testID={`pilulier-pill-${pill.id}`}
+                                onPress={() =>
+                                  selectedPillId.set(active() ? null : pill.id)
+                                }
+                                class={
+                                  active()
+                                    ? "px-2.5 py-1 rounded-full bg-primary border border-primary"
+                                    : "px-2.5 py-1 rounded-full bg-card border border-border"
+                                }
+                                style={BUTTON_MOTION_STYLE}
+                                activeStyle={BUTTON_ACTIVE_STYLE}
+                              >
+                                <Text
+                                  class={
+                                    active()
+                                      ? "text-xs font-medium text-primary-foreground"
+                                      : "text-xs text-muted-foreground"
+                                  }
+                                >
+                                  {t(pill.labelKey)}
+                                </Text>
+                              </Button>
+                            );
+                          })}
+                        </View>
+                        <View
+                          class="px-3.5 py-2 rounded-3xl bg-secondary border border-border"
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 8,
+                          }}
+                        >
+                          <Input
+                            testID="chat-input"
+                            value={composerText()}
+                            placeholder={t("inputPlaceholder", {
+                              name: store.relationship().companionName,
+                            })}
+                            submitBehavior="submit"
+                            onChange={(e) => composerText.set(e.value)}
+                            onSubmit={() => void submitMessage()}
+                            class="flex-1 px-1.5 py-1.5 bg-secondary text-sm text-foreground"
+                            style={{ minWidth: 0 }}
+                          />
+                          <Button
+                            testID="send-btn"
+                            onPress={() => void submitMessage()}
+                            class="rounded-full bg-primary"
+                            style={[
+                              BUTTON_MOTION_STYLE,
+                              {
+                                width: 32,
+                                height: 32,
+                                alignItems: "center",
+                                justifyContent: "center",
+                                flexShrink: 0,
+                              },
+                            ]}
+                            hoverStyle={{ opacity: 0.9 }}
+                            activeStyle={BUTTON_ACTIVE_STYLE}
+                          >
+                            <SendArrowIcon size={16} colorToken="primary-foreground" />
+                          </Button>
+                        </View>
                       </View>
                     }
                   >

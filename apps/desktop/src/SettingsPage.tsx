@@ -1066,6 +1066,13 @@ export function SettingsPage(props: SettingsPageProps) {
                         <Text class="text-xs text-muted-foreground" style={{ lineHeight: 17 }}>
                           {mem().content}
                         </Text>
+                        <If when={(mem().sourceMessageIds?.length ?? 0) > 0}>
+                          <Text class="text-xs text-muted-foreground" style={{ opacity: 0.78 }}>
+                            {t("memoryEvidenceCount", {
+                              count: mem().sourceMessageIds?.length ?? 0,
+                            })}
+                          </Text>
+                        </If>
                       </View>
                     )}
                   </Each>

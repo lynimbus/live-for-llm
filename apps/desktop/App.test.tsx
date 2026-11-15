@@ -404,6 +404,7 @@ test("ChatGPT-style workspace, right-click own-message recall, session-scoped ta
 
   await app.press("id:settings-tab-memories");
   await app.waitFor("text:[事实] Favorite tea");
+  // Check evidence count indicator when sourceMessageIds are present (added via snapshot or add flow)
   await app.type("id:memory-new-title", "Morning ritual");
   await app.type("id:memory-new-content", "Checks build status first.");
   await app.press("id:memory-add-btn");
@@ -421,6 +422,101 @@ test("ChatGPT-style workspace, right-click own-message recall, session-scoped ta
   await app.press("id:lang-en");
   await app.press("id:close-settings-btn");
   await app.waitFor("text:New chat");
+});
+
+test("Pilulier pill attaches ephemeralHint to a single send, resets afterwards, and evidence/takeover controls render", async () => {
+  const pausedSnapshot = {
+    ...makeSnapshot(),
+    memories: [
+      {
+        id: "mem_ev_1",
+        kind: "fact",
+        title: "Pinned evidence",
+        content: "Prefers black tea.",
+        tags: ["tea"],
+        importance: 0.85,
+        source: "chat_extract",
+        sourceMessageIds: ["msg_u1", "msg_a1"],
+        createdAt: "2026-11-15T05:00:00Z",
+        updatedAt: "2026-11-15T05:00:00Z",
+      },
+    ],
+    tasks: [
+      {
+        id: "task_paused_1",
+        conversationId: "conv_default",
+        taskKind: "browser_research",
+        title: "Login check",
+        runnerId: "browser-runner",
+        state: {
+          kind: "paused_for_user",
+          reason: "login_required",
+          instructions: "Please log in",
+          pausedAt: "2026-11-15T05:10:00Z",
+        },
+        createdAt: "2026-11-15T05:09:00Z",
+        updatedAt: "2026-11-15T05:10:00Z",
+      },
+    ],
+  };
+
+  const postedCommands: Array<{ kind: string; content?: string; ephemeralHint?: string }> = [];
+
+  const app = await open("./App.tsx", {
+    platform: "linux",
+    width: 1120,
+    height: 840,
+    host: {
+      params: {
+        daemonUrl: BASE_URL,
+      },
+    },
+    network: {
+      [`GET ${BASE_URL}/api/state*`]: () => ({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(pausedSnapshot),
+      }),
+      [`POST ${BASE_URL}/api/command`]: (req) => {
+        const parsed = JSON.parse(req.body ?? "{}") as {
+          kind: string;
+          content?: string;
+          ephemeralHint?: string;
+        };
+        postedCommands.push(parsed);
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ok: true }),
+        };
+      },
+    },
+  });
+
+  await app.waitFor("id:banner-inspect-btn");
+  await app.waitFor("id:pilulier-pill-brief");
+
+  // Select single-turn pill and send message #1 -> should include ephemeralHint
+  await app.press("id:pilulier-pill-brief");
+  await app.type("id:chat-input", "First turn");
+  await app.press("id:send-btn");
+  expect(
+    postedCommands.some(
+      (c) => c.kind === "chat.send" && c.content === "First turn" && Boolean(c.ephemeralHint),
+    ),
+  ).toBe(true);
+
+  // Send message #2 without selecting pill -> ephemeralHint must have burned after reading
+  await app.type("id:chat-input", "Second turn");
+  await app.press("id:send-btn");
+  const second = postedCommands.find((c) => c.kind === "chat.send" && c.content === "Second turn");
+  expect(second?.ephemeralHint).toBeUndefined();
+
+  // Check verbatim evidence count badge in Settings -> Memories
+  await app.press("id:avatar-settings-btn");
+  await app.waitFor("id:settings-page");
+  await app.press("id:settings-tab-memories");
+  await app.waitFor("text:2 条原文依据");
 });
 
 test("renders empty welcome card in narrow split layout and submits starter prompt", async () => {

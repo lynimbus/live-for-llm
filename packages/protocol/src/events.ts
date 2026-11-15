@@ -156,6 +156,7 @@ export type ClientCommand =
       readonly conversationId: ConversationId;
       readonly content: string;
       readonly deviceId?: DeviceId;
+      readonly ephemeralHint?: string;
     }
   | {
       readonly kind: "chat.recall";
@@ -524,11 +525,15 @@ export function parseClientCommand(raw: unknown): ClientCommand {
   switch (kind) {
     case "chat.send": {
       const deviceId = obj["deviceId"] === undefined ? undefined : parseDeviceId(obj["deviceId"]);
+      const ephemeralHint = expectOptionalString(obj["ephemeralHint"], "chat.send.ephemeralHint");
       return {
         kind: "chat.send",
         conversationId: parseConversationId(obj["conversationId"]),
         content: expectNonEmptyString(obj["content"], "chat.send.content"),
         ...(deviceId !== undefined ? { deviceId } : {}),
+        ...(ephemeralHint !== undefined && ephemeralHint.trim()
+          ? { ephemeralHint: ephemeralHint.trim() }
+          : {}),
       };
     }
     case "chat.recall": {

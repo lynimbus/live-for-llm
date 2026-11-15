@@ -32,6 +32,9 @@ function formatMemorySection(record: MemoryRecord): string {
   ];
   if (record.emotionalTone) extras.push(`tone: ${record.emotionalTone}`);
   if (record.eventDate) extras.push(`date: ${record.eventDate}`);
+  if (record.sourceMessageIds && record.sourceMessageIds.length > 0) {
+    extras.push(`evidence: ${record.sourceMessageIds.join(",")}`);
+  }
 
   return [
     `<!-- memory:id=${record.id} kind=${record.kind} -->`,
@@ -133,6 +136,7 @@ export function importMarkdownEdits(params: {
         source: "user_edit",
         ...(existing?.emotionalTone ? { emotionalTone: existing.emotionalTone } : {}),
         ...(existing?.eventDate ? { eventDate: existing.eventDate } : {}),
+        ...(existing?.sourceMessageIds ? { sourceMessageIds: existing.sourceMessageIds } : {}),
       });
       updatedCount += 1;
     }

@@ -1,4 +1,4 @@
-import { type MemoryId, parseMemoryId } from "./ids.ts";
+import { type MemoryId, type MessageId, parseMemoryId, parseMessageId } from "./ids.ts";
 import {
   expectEnum,
   expectNonEmptyString,
@@ -25,11 +25,17 @@ export interface MemoryRecord {
   readonly source: MemorySource;
   readonly emotionalTone?: string;
   readonly eventDate?: string;
+  readonly sourceMessageIds?: readonly MessageId[];
+  readonly lastRecalledAt?: string;
+  readonly recallCount?: number;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
 
-export type MemoryDraft = Omit<MemoryRecord, "id" | "createdAt" | "updatedAt"> & {
+export type MemoryDraft = Omit<
+  MemoryRecord,
+  "id" | "createdAt" | "updatedAt" | "lastRecalledAt" | "recallCount"
+> & {
   readonly id?: MemoryId;
 };
 
@@ -65,6 +71,13 @@ export function parseMemoryDraft(raw: unknown): MemoryDraft {
   const emotionalTone = expectOptionalString(obj["emotionalTone"], "MemoryDraft.emotionalTone");
   const eventDate = expectOptionalString(obj["eventDate"], "MemoryDraft.eventDate");
   const id = obj["id"] === undefined ? undefined : parseMemoryId(obj["id"]);
+  let sourceMessageIds: readonly MessageId[] | undefined;
+  if (obj["sourceMessageIds"] !== undefined) {
+    if (!Array.isArray(obj["sourceMessageIds"])) {
+      throw new Error("Invalid MemoryDraft.sourceMessageIds: expected array");
+    }
+    sourceMessageIds = obj["sourceMessageIds"].map((item) => parseMessageId(item));
+  }
 
   return {
     ...(id !== undefined ? { id } : {}),
@@ -76,6 +89,7 @@ export function parseMemoryDraft(raw: unknown): MemoryDraft {
     source: expectEnum(obj["source"] ?? "user_edit", MEMORY_SOURCES, "MemoryDraft.source"),
     ...(emotionalTone !== undefined ? { emotionalTone } : {}),
     ...(eventDate !== undefined ? { eventDate } : {}),
+    ...(sourceMessageIds !== undefined && sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
   };
 }
 
@@ -83,9 +97,16 @@ export function parseMemoryDraft(raw: unknown): MemoryDraft {
 export function parseMemoryRecord(raw: unknown): MemoryRecord {
   const obj = expectObject(raw, "MemoryRecord");
   const draft = parseMemoryDraft(obj);
+  const lastRecalledAt = expectOptionalString(obj["lastRecalledAt"], "MemoryRecord.lastRecalledAt");
+  const recallCount =
+    obj["recallCount"] === undefined
+      ? undefined
+      : expectNumber(obj["recallCount"], "MemoryRecord.recallCount");
   return {
     ...draft,
     id: parseMemoryId(obj["id"]),
+    ...(lastRecalledAt !== undefined ? { lastRecalledAt } : {}),
+    ...(recallCount !== undefined ? { recallCount } : {}),
     createdAt: expectString(obj["createdAt"], "MemoryRecord.createdAt"),
     updatedAt: expectString(obj["updatedAt"], "MemoryRecord.updatedAt"),
   };

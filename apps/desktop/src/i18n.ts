@@ -201,6 +201,12 @@ const DICT = {
     memoryKindEpisode: "经历",
     memoryKindPreference: "偏好",
     memoryKindRelationship: "关系",
+    memoryEvidenceCount: "{count} 条原文依据",
+    pillBrief: "单轮: 简短直给",
+    pillHonest: "单轮: 直说别客气",
+    pillAction: "单轮: 立刻给方案",
+    pillWarm: "单轮: 温柔哄一下",
+    btnInspectBrowser: "查看 / 接管",
   },
   "en-US": {
     appTag: "live-for-llm",
@@ -365,6 +371,12 @@ const DICT = {
     memoryKindEpisode: "episode",
     memoryKindPreference: "preference",
     memoryKindRelationship: "relationship",
+    memoryEvidenceCount: "{count} source msgs",
+    pillBrief: "Once: Brief",
+    pillHonest: "Once: Blunt",
+    pillAction: "Once: Actionable",
+    pillWarm: "Once: Gentle",
+    btnInspectBrowser: "Inspect / Take Over",
   },
 } as const;
 

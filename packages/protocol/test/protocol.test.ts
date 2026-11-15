@@ -8,6 +8,7 @@ import {
   parseConversationId,
   parseDaemonEvent,
   parseMemoryDraft,
+  parseMemoryRecord,
   parseTaskRecord,
 } from "../src/index.ts";
 
@@ -223,4 +224,32 @@ test("parseMemoryDraft enforces importance range and memory kind", () => {
       }),
     /expected value in \[0, 1\]/,
   );
+
+  const cmdWithPill = parseClientCommand({
+    kind: "chat.send",
+    conversationId: "conv_main",
+    content: "Tell me straight",
+    ephemeralHint: "Be blunt once.",
+  });
+  assert.equal(cmdWithPill.kind, "chat.send");
+  if (cmdWithPill.kind === "chat.send") {
+    assert.equal(cmdWithPill.ephemeralHint, "Be blunt once.");
+  }
+
+  const memRec = parseMemoryRecord({
+    id: "mem_01",
+    kind: "fact",
+    title: "Evidence-linked fact",
+    content: "Uses Vim.",
+    tags: ["editor"],
+    importance: 0.8,
+    source: "chat_extract",
+    sourceMessageIds: ["msg_u1", "msg_a1"],
+    lastRecalledAt: "2026-11-15T06:00:00Z",
+    recallCount: 3,
+    createdAt: "2026-11-15T05:00:00Z",
+    updatedAt: "2026-11-15T06:00:00Z",
+  });
+  assert.deepEqual(memRec.sourceMessageIds, ["msg_u1", "msg_a1"]);
+  assert.equal(memRec.recallCount, 3);
 });

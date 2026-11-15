@@ -11,9 +11,15 @@ import {
 } from "@live-for-llm/protocol";
 import {
   CompanionRuntime,
+  PROMPT_CACHE_DYNAMIC_BOUNDARY,
   ProactiveScheduler,
+  composeCompanionStaticPrefix,
   composeCompanionSystemPrompt,
+  computeProactiveCooldownMinutes,
+  countTrailingUnansweredProactive,
   createUtilityTools,
+  decayRelationshipState,
+  detectAuthOrChallengeHint,
   isWithinQuietHours,
 } from "../src/index.ts";
 
@@ -222,6 +228,204 @@ test("ProactiveScheduler respects quiet hours and emits due check-ins", async ()
     const activeFired = await scheduler.tick(new Date(2026, 10, 15, 10, 0, 0));
     assert.equal(activeFired, 1);
     assert.equal(events[0]?.kind, "proactive.message");
+  } finally {
+    store.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("Temporal decay, prompt cache partition, rich joint extraction, Pilulier burn-after-reading, and [SKIP] + backoff", async () => {
+  // 1. Temporal context + static/dynamic prefix stability
+  const store = new MemoryStore(":memory:");
+  const seenChatRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  let extractPromptUserText = "";
+
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+        messages: Array<{ role: string; content: string }>;
+        stream?: boolean;
+      };
+      const sys = body.messages.find((m) => m.role === "system")?.content ?? "";
+
+      if (sys.includes("Extract durable personal memories")) {
+        extractPromptUserText = body.messages.find((m) => m.role === "user")?.content ?? "";
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    memories: [
+                      {
+                        kind: "fact",
+                        title: "Deleted item should stay suppressed",
+                        content: "Secretly likes pineapple pizza",
+                        tags: ["food"],
+                        importance: 0.6,
+                      },
+                      {
+                        kind: "preference",
+                        title: "Late-night tea",
+                        content: "Drinks roasted green tea while debugging",
+                        tags: ["tea"],
+                        importance: 0.8,
+                      },
+                    ],
+                    mood: "playful",
+                    affinityDelta: 0.02,
+                    insideJokes: ["debug-tea-club"],
+                    anniversaries: [{ label: "First deploy", date: "11-16" }],
+                    conversationTitle: "深夜茶话调试",
+                  }),
+                },
+              },
+            ],
+          }),
+        );
+        return;
+      }
+
+      if (sys.includes("[SKIP]") || body.messages.some((m) => m.content.includes("[SKIP]"))) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { content: "[SKIP]" } }] }));
+        return;
+      }
+
+      seenChatRequests.push({ messages: body.messages });
+      if (body.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write('data: {"choices":[{"delta":{"content":"收到，简短说明。"}}]}\n\n');
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const addr = server.address();
+  assert.ok(addr && typeof addr !== "string");
+
+  try {
+    // Rejection tombstone setup
+    const doomed = store.upsertMemory({
+      kind: "fact",
+      title: "Deleted item should stay suppressed",
+      content: "Secretly likes pineapple pizza",
+      tags: ["food"],
+      importance: 0.6,
+      source: "user_edit",
+    });
+    store.deleteMemory(doomed.id);
+
+    // Mood decay check
+    const staleRel = {
+      ...store.getRelationshipState(),
+      currentMood: "warm",
+      updatedAt: new Date(Date.now() - 8 * 3_600_000).toISOString(),
+    };
+    const decayed = decayRelationshipState(staleRel, new Date(2026, 10, 15, 14, 0, 0));
+    assert.equal(decayed.currentMood, "calm");
+    const lateNight = decayRelationshipState(decayed, new Date(2026, 10, 15, 23, 30, 0));
+    assert.equal(lateNight.currentMood, "tired");
+
+    // Static prefix + dynamic partition check
+    const staticA = composeCompanionStaticPrefix({
+      companionName: staleRel.companionName,
+      userName: staleRel.userName,
+    });
+    const fullPrompt = composeCompanionSystemPrompt({
+      relationship: { ...staleRel, anniversaries: [{ label: "First deploy", date: "11-16" }] },
+      memories: [],
+      activeTasks: [],
+      temporal: {
+        now: new Date(2026, 10, 15, 14, 0, 0),
+        lastUserMessageAt: new Date(2026, 10, 15, 12, 0, 0).toISOString(),
+      },
+    });
+    assert.ok(fullPrompt.startsWith(staticA));
+    assert.ok(fullPrompt.includes(PROMPT_CACHE_DYNAMIC_BOUNDARY));
+    assert.ok(fullPrompt.includes("First deploy"));
+
+    // Runtime chat with ephemeralHint + turn-1 companion title + sourceMessageIds
+    const events: DaemonEvent[] = [];
+    const runtime = new CompanionRuntime({
+      router: createModelRouter({ config: buildConfig(`http://127.0.0.1:${addr.port}`) }),
+      store,
+      runners: new TaskRunnerRegistry(),
+      emit: (e) => events.push(e),
+    });
+
+    const convId = parseConversationId("conv_main");
+    await runtime.handleUserMessage({
+      conversationId: convId,
+      content: "帮我看看这个问题",
+      ephemeralHint: "Be extra brief on this single turn.",
+    });
+
+    // ephemeralHint appeared in LLM prompt, NOT in DB history or extractor input
+    const chatSysAndUser = seenChatRequests[0]?.messages.map((m) => m.content).join("\n") ?? "";
+    assert.ok(chatSysAndUser.includes("Be extra brief on this single turn."));
+    assert.equal(extractPromptUserText.includes("Be extra brief on this single turn."), false);
+    const storedHistory = store.listChatMessages(convId);
+    assert.equal(storedHistory.some((m) => m.content.includes("Be extra brief")), false);
+
+    // Joint extraction respected tombstone, kept Late-night tea with verbatim evidence, updated jokes/anniversaries & title
+    const mems = store.listMemories();
+    assert.equal(mems.some((m) => m.title.includes("Deleted item")), false);
+    const tea = mems.find((m) => m.title === "Late-night tea");
+    assert.ok(tea);
+    assert.equal(tea.sourceMessageIds?.length, 2);
+    const relAfter = store.getRelationshipState();
+    assert.ok(relAfter.insideJokes.includes("debug-tea-club"));
+    assert.ok(relAfter.anniversaries.some((a) => a.label === "First deploy"));
+    assert.equal(store.listConversations().find((c) => c.id === convId)?.title, "深夜茶话调试");
+
+    // Proactive [SKIP] silent gate & backoff math
+    assert.equal(computeProactiveCooldownMinutes(60, 0), 60);
+    assert.equal(computeProactiveCooldownMinutes(60, 2), 240);
+    store.upsertProactiveRule({
+      id: parseScheduleId("sched_skip"),
+      label: "Quiet ping",
+      cronOrIntervalMinutes: 30,
+      quietHoursStart: 23,
+      quietHoursEnd: 7,
+      enabled: true,
+      promptHint: "Say hi if helpful.",
+    });
+    const scheduler = new ProactiveScheduler({
+      store,
+      router: createModelRouter({ config: buildConfig(`http://127.0.0.1:${addr.port}`) }),
+      conversationId: convId,
+      emit: (e) => events.push(e),
+    });
+    const skippedCount = await scheduler.tick(new Date(2026, 10, 15, 11, 0, 0));
+    assert.equal(skippedCount, 0);
+    assert.equal(events.some((e) => e.kind === "proactive.message"), false);
+    assert.equal(countTrailingUnansweredProactive(store.listChatMessages(convId)), 0);
+
+    // Passive auth/challenge detection helper
+    assert.ok(
+      detectAuthOrChallengeHint({
+        url: "https://example.com/login",
+        title: "Sign in",
+        textExcerpt: "Please verify you are human (CAPTCHA)",
+      }),
+    );
+    assert.equal(
+      detectAuthOrChallengeHint({
+        url: "https://example.com/docs",
+        title: "Docs",
+        textExcerpt: "API overview",
+      }),
+      undefined,
+    );
   } finally {
     store.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));

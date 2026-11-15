@@ -18,7 +18,8 @@ import {
 } from "@live-for-llm/protocol";
 import {
   computeSilentRelationshipUpdate,
-  extractMemoriesFromTurn,
+  decayRelationshipState,
+  extractTurnAnalysis,
 } from "./extractor.ts";
 import { composeCompanionSystemPrompt } from "./prompt.ts";
 
@@ -50,6 +51,8 @@ export class CompanionRuntime {
   private readonly emit: (event: DaemonEvent) => void;
   private readonly enableEmbeddings: boolean;
   private readonly getDefaultRunnerId?: (taskKind: TaskKind) => string | undefined;
+  private readonly onTaskPausedForUser?: (task: TaskRecord, reason: string) => Promise<void> | void;
+  private readonly onTaskResumedFromUser?: (task: TaskRecord) => Promise<void> | void;
   private readonly activeAbortControllers = new Map<TaskId, AbortController>();
   private readonly pendingApprovals = new Map<
     ApprovalId,
@@ -65,6 +68,8 @@ export class CompanionRuntime {
     readonly emit: (event: DaemonEvent) => void;
     readonly enableEmbeddings?: boolean;
     readonly getDefaultRunnerId?: (taskKind: TaskKind) => string | undefined;
+    readonly onTaskPausedForUser?: (task: TaskRecord, reason: string) => Promise<void> | void;
+    readonly onTaskResumedFromUser?: (task: TaskRecord) => Promise<void> | void;
   }) {
     this.router = params.router;
     this.store = params.store;
@@ -74,18 +79,32 @@ export class CompanionRuntime {
     if (params.getDefaultRunnerId !== undefined) {
       this.getDefaultRunnerId = params.getDefaultRunnerId;
     }
+    if (params.onTaskPausedForUser !== undefined) {
+      this.onTaskPausedForUser = params.onTaskPausedForUser;
+    }
+    if (params.onTaskResumedFromUser !== undefined) {
+      this.onTaskResumedFromUser = params.onTaskResumedFromUser;
+    }
   }
 
   async handleUserMessage(params: {
     readonly conversationId: ConversationId;
     readonly content: string;
+    readonly ephemeralHint?: string;
   }): Promise<{ readonly reply: ChatMessage; readonly spawnedTaskIds: TaskId[] }> {
+    const now = new Date();
+    const priorHistory = this.store
+      .listChatMessages(params.conversationId, 20)
+      .filter((m) => !m.recalled && m.content.trim().length > 0);
+    const prevUserMessage = [...priorHistory].reverse().find((m) => m.role === "user");
+    const isFirstTurn = priorHistory.every((m) => m.role !== "user");
+
     const userMessage: ChatMessage = {
       id: parseMessageId(newId("msg")),
       conversationId: params.conversationId,
       role: "user",
       content: params.content,
-      createdAt: new Date().toISOString(),
+      createdAt: now.toISOString(),
     };
     this.store.appendChatMessage(userMessage);
     this.emit({ kind: "chat.message", message: userMessage });
@@ -107,8 +126,12 @@ export class CompanionRuntime {
         ...(queryEmbedding ? { queryEmbedding } : {}),
       })
       .map((r) => r.record);
+    this.store.markMemoriesRecalled(
+      recalled.map((m) => m.id),
+      now.toISOString(),
+    );
 
-    const relationship = this.store.getRelationshipState();
+    const relationship = decayRelationshipState(this.store.getRelationshipState(), now);
     const activeTasks = this.store
       .listTasks(10)
       .filter(
@@ -122,15 +145,33 @@ export class CompanionRuntime {
     const history = this.store
       .listChatMessages(params.conversationId, 20)
       .filter((m) => !m.recalled && m.content.trim().length > 0);
+    const cleanEphemeralHint = params.ephemeralHint?.trim();
+    const turnMessages: ChatTurnMessage[] = history.map((m, idx) => {
+      const isTrailingUser = idx === history.length - 1 && m.id === userMessage.id;
+      const content =
+        isTrailingUser && cleanEphemeralHint
+          ? `${m.content}\n\n[Single-turn nuance — apply ONLY for this reply, do not mention or store: ${cleanEphemeralHint}]`
+          : m.content;
+      return {
+        role: (m.role === "companion" ? "assistant" : m.role) as "user" | "assistant" | "system",
+        content,
+      };
+    });
+
     const messages: ChatTurnMessage[] = [
       {
         role: "system",
-        content: composeCompanionSystemPrompt({ relationship, memories: recalled, activeTasks }),
+        content: composeCompanionSystemPrompt({
+          relationship,
+          memories: recalled,
+          activeTasks,
+          temporal: {
+            now,
+            ...(prevUserMessage ? { lastUserMessageAt: prevUserMessage.createdAt } : {}),
+          },
+        }),
       },
-      ...history.map((m) => ({
-        role: (m.role === "companion" ? "assistant" : m.role) as "user" | "assistant" | "system",
-        content: m.content,
-      })),
+      ...turnMessages,
     ];
 
     const assistantMessageId = parseMessageId(newId("msg"));
@@ -208,17 +249,34 @@ export class CompanionRuntime {
     this.store.appendChatMessage(reply);
     this.emit({ kind: "chat.message", message: reply });
 
-    let extracted: Awaited<ReturnType<typeof extractMemoriesFromTurn>> = [];
+    let analysis: Awaited<ReturnType<typeof extractTurnAnalysis>> = {
+      memories: [],
+      insideJokes: [],
+      anniversaries: [],
+    };
     try {
-      extracted = await extractMemoriesFromTurn({
+      analysis = await extractTurnAnalysis({
         router: this.router,
         store: this.store,
         userText: params.content,
         companionText: reply.content,
+        sourceMessageIds: [userMessage.id, reply.id],
         enableEmbeddings: this.enableEmbeddings,
       });
-      if (extracted.length > 0) {
-        this.emit({ kind: "memory.updated", records: extracted });
+      if (analysis.memories.length > 0) {
+        this.emit({ kind: "memory.updated", records: [...analysis.memories] });
+      }
+      if (isFirstTurn && analysis.conversationTitle) {
+        const renamed = this.store.renameConversation(
+          params.conversationId,
+          analysis.conversationTitle,
+        );
+        if (renamed) {
+          this.emit({
+            kind: "conversations.updated",
+            conversations: this.store.listConversations(50),
+          });
+        }
       }
     } catch {
       // Non-fatal memory extraction failure must not interrupt conversation delivery.
@@ -226,10 +284,11 @@ export class CompanionRuntime {
 
     try {
       const nextRel = computeSilentRelationshipUpdate({
-        current: this.store.getRelationshipState(),
+        current: relationship,
         userText: params.content,
         companionText: reply.content,
-        extracted,
+        extracted: analysis.memories,
+        analysis,
       });
       const persisted = this.store.updateRelationshipState(nextRel);
       this.emit({ kind: "relationship.updated", relationship: persisted });
@@ -459,6 +518,11 @@ export class CompanionRuntime {
                 title: `Paused (${req.reason})`,
                 detail: req.instructions,
               });
+              if (this.onTaskPausedForUser) {
+                void Promise.resolve(this.onTaskPausedForUser(current, req.reason)).catch(
+                  () => undefined,
+                );
+              }
             }),
           waitIfPaused: async () => {
             if (!manualPausePromise) return false;
@@ -531,6 +595,12 @@ export class CompanionRuntime {
     const handler = this.manualPauseHandlers.get(taskId);
     if (!handler) return false;
     handler(instructions);
+    const task = this.store.getTask(taskId);
+    if (task && this.onTaskPausedForUser) {
+      void Promise.resolve(this.onTaskPausedForUser(task, instructions ?? "manual_intervention")).catch(
+        () => undefined,
+      );
+    }
     return true;
   }
 
@@ -545,6 +615,10 @@ export class CompanionRuntime {
     const resolver = this.pendingUserResumes.get(taskId);
     if (!resolver) return false;
     resolver();
+    const task = this.store.getTask(taskId);
+    if (task && this.onTaskResumedFromUser) {
+      void Promise.resolve(this.onTaskResumedFromUser(task)).catch(() => undefined);
+    }
     return true;
   }
 

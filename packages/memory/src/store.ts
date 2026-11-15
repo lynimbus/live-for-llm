@@ -13,6 +13,7 @@ import {
   type MemoryQuery,
   type MemoryRecord,
   type MemorySearchResult,
+  type MessageId,
   type PolicyConfig,
   type ProactiveRule,
   type RelationshipState,
@@ -30,6 +31,7 @@ import {
 
 export interface MemorySearchOptions extends MemoryQuery {
   readonly queryEmbedding?: Float32Array;
+  readonly applyRecallCooldown?: boolean;
 }
 
 const DEFAULT_RELATIONSHIP_STATE: RelationshipState = {
@@ -94,6 +96,25 @@ function buildFtsTrigramQuery(tokens: readonly string[]): string {
   return trigramTokens.map((t) => `"${t}"`).join(" OR ");
 }
 
+function normalizeMemoryFingerprint(title: string, content: string): string {
+  return `${title}\n${content}`
+    .toLowerCase()
+    .replace(/[\s,.;:!?，。；：！？、"'`()\[\]{}<>/\\|+-]+/g, " ")
+    .trim();
+}
+
+function tokenJaccardSimilarity(a: string, b: string): number {
+  const tokensA = new Set(extractSearchTokens(a));
+  const tokensB = new Set(extractSearchTokens(b));
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let intersection = 0;
+  for (const tok of tokensA) {
+    if (tokensB.has(tok)) intersection += 1;
+  }
+  const union = tokensA.size + tokensB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
 interface RawMemoryRow {
   id: string;
   kind: string;
@@ -104,12 +125,34 @@ interface RawMemoryRow {
   source: string;
   emotional_tone: string | null;
   event_date: string | null;
+  source_message_ids_json?: string | null;
+  last_recalled_at?: string | null;
+  recall_count?: number | null;
   embedding: Uint8Array | null;
   created_at: string;
   updated_at: string;
 }
 
+function parseSourceMessageIdsJson(raw: string | null | undefined): MessageId[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: MessageId[] = [];
+    for (const item of parsed) {
+      if (typeof item === "string" && item.trim()) {
+        out.push(parseMessageId(item));
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 function rowToMemoryRecord(row: RawMemoryRow): MemoryRecord {
+  const sourceMessageIds = parseSourceMessageIdsJson(row.source_message_ids_json);
+  const recallCount = typeof row.recall_count === "number" ? row.recall_count : 0;
   return {
     id: parseMemoryId(row.id),
     kind: row.kind as MemoryKind,
@@ -120,6 +163,9 @@ function rowToMemoryRecord(row: RawMemoryRow): MemoryRecord {
     source: row.source as MemoryRecord["source"],
     ...(row.emotional_tone !== null ? { emotionalTone: row.emotional_tone } : {}),
     ...(row.event_date !== null ? { eventDate: row.event_date } : {}),
+    ...(sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
+    ...(row.last_recalled_at ? { lastRecalledAt: row.last_recalled_at } : {}),
+    ...(recallCount > 0 ? { recallCount } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -150,9 +196,19 @@ export class MemoryStore {
         source TEXT NOT NULL,
         emotional_tone TEXT,
         event_date TEXT,
+        source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+        last_recalled_at TEXT,
+        recall_count INTEGER NOT NULL DEFAULT 0,
         embedding BLOB,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rejected_memories (
+        fingerprint TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        rejected_at TEXT NOT NULL
       );
 
       CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -241,6 +297,22 @@ export class MemoryStore {
       this.db.exec("ALTER TABLE chat_messages ADD COLUMN recalled_by TEXT;");
     }
 
+    const memCols = this.db
+      .prepare("PRAGMA table_info(memories)")
+      .all() as unknown as Array<{ name: string }>;
+    const existingMemCols = new Set(memCols.map((c) => c.name));
+    if (!existingMemCols.has("source_message_ids_json")) {
+      this.db.exec(
+        "ALTER TABLE memories ADD COLUMN source_message_ids_json TEXT NOT NULL DEFAULT '[]';",
+      );
+    }
+    if (!existingMemCols.has("last_recalled_at")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN last_recalled_at TEXT;");
+    }
+    if (!existingMemCols.has("recall_count")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0;");
+    }
+
     // Backfill any pre-existing conversations from chat_messages.
     const orphanConvs = this.db
       .prepare(
@@ -279,14 +351,25 @@ export class MemoryStore {
     const existing = this.getMemory(id);
     const createdAt = existing?.createdAt ?? now;
     const tagsJson = JSON.stringify(draft.tags);
+    const mergedSourceIds = Array.from(
+      new Set([...(existing?.sourceMessageIds ?? []), ...(draft.sourceMessageIds ?? [])]),
+    );
+    const sourceIdsJson = JSON.stringify(mergedSourceIds);
     const embeddingBlob = embedding ? encodeEmbedding(embedding) : null;
+
+    if (draft.source === "user_edit") {
+      const fp = normalizeMemoryFingerprint(draft.title, draft.content);
+      if (fp) {
+        this.db.prepare("DELETE FROM rejected_memories WHERE fingerprint = ?").run(fp);
+      }
+    }
 
     this.db
       .prepare(
         `INSERT INTO memories (
           id, kind, title, content, tags_json, importance, source,
-          emotional_tone, event_date, embedding, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          emotional_tone, event_date, source_message_ids_json, embedding, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           kind = excluded.kind,
           title = excluded.title,
@@ -296,6 +379,7 @@ export class MemoryStore {
           source = excluded.source,
           emotional_tone = excluded.emotional_tone,
           event_date = excluded.event_date,
+          source_message_ids_json = excluded.source_message_ids_json,
           embedding = COALESCE(excluded.embedding, memories.embedding),
           updated_at = excluded.updated_at`,
       )
@@ -309,6 +393,7 @@ export class MemoryStore {
         draft.source,
         draft.emotionalTone ?? null,
         draft.eventDate ?? null,
+        sourceIdsJson,
         embeddingBlob,
         createdAt,
         now,
@@ -329,6 +414,9 @@ export class MemoryStore {
       source: draft.source,
       ...(draft.emotionalTone !== undefined ? { emotionalTone: draft.emotionalTone } : {}),
       ...(draft.eventDate !== undefined ? { eventDate: draft.eventDate } : {}),
+      ...(mergedSourceIds.length > 0 ? { sourceMessageIds: mergedSourceIds } : {}),
+      ...(existing?.lastRecalledAt ? { lastRecalledAt: existing.lastRecalledAt } : {}),
+      ...(existing?.recallCount ? { recallCount: existing.recallCount } : {}),
       createdAt,
       updatedAt: now,
     };
@@ -356,14 +444,84 @@ export class MemoryStore {
     return rows.map(rowToMemoryRecord);
   }
 
-  deleteMemory(id: MemoryId): boolean {
+  deleteMemory(id: MemoryId, options?: { readonly recordRejection?: boolean }): boolean {
+    const existing = this.getMemory(id);
     const res = this.db.prepare("DELETE FROM memories WHERE id = ?").run(id);
     this.db.prepare("DELETE FROM memories_fts WHERE memory_id = ?").run(id);
-    return Number(res.changes) > 0;
+    const deleted = Number(res.changes) > 0;
+    if (deleted && existing && options?.recordRejection !== false) {
+      const fp = normalizeMemoryFingerprint(existing.title, existing.content);
+      if (fp) {
+        this.db
+          .prepare(
+            `INSERT OR REPLACE INTO rejected_memories (fingerprint, title, content, rejected_at)
+             VALUES (?, ?, ?, ?)`,
+          )
+          .run(fp, existing.title, existing.content, new Date().toISOString());
+      }
+    }
+    return deleted;
+  }
+
+  isMemoryRejected(title: string, content: string): boolean {
+    const fp = normalizeMemoryFingerprint(title, content);
+    if (!fp) return false;
+    const exact = this.db
+      .prepare("SELECT 1 FROM rejected_memories WHERE fingerprint = ?")
+      .get(fp);
+    if (exact) return true;
+
+    const rows = this.db
+      .prepare("SELECT title, content FROM rejected_memories ORDER BY rejected_at DESC LIMIT 300")
+      .all() as unknown as Array<{ title: string; content: string }>;
+    const candidate = `${title}\n${content}`;
+    for (const row of rows) {
+      if (tokenJaccardSimilarity(candidate, `${row.title}\n${row.content}`) >= 0.72) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  findSimilarMemory(params: {
+    readonly kind: MemoryKind;
+    readonly title: string;
+    readonly content: string;
+  }): MemoryRecord | undefined {
+    const rows = this.db
+      .prepare("SELECT * FROM memories WHERE kind = ? ORDER BY updated_at DESC LIMIT 200")
+      .all(params.kind) as unknown as RawMemoryRow[];
+    const normTitle = params.title.trim().toLowerCase();
+    const candidate = `${params.title}\n${params.content}`;
+    let best: { record: MemoryRecord; sim: number } | undefined;
+
+    for (const row of rows) {
+      if (row.title.trim().toLowerCase() === normTitle) {
+        return rowToMemoryRecord(row);
+      }
+      const sim = tokenJaccardSimilarity(candidate, `${row.title}\n${row.content}`);
+      if (sim >= 0.68 && (!best || sim > best.sim)) {
+        best = { record: rowToMemoryRecord(row), sim };
+      }
+    }
+    return best?.record;
+  }
+
+  markMemoriesRecalled(ids: readonly MemoryId[], recalledAt = new Date().toISOString()): void {
+    if (ids.length === 0) return;
+    const stmt = this.db.prepare(
+      `UPDATE memories
+       SET last_recalled_at = ?, recall_count = COALESCE(recall_count, 0) + 1
+       WHERE id = ?`,
+    );
+    for (const id of ids) {
+      stmt.run(recalledAt, id);
+    }
   }
 
   searchMemories(options: MemorySearchOptions): MemorySearchResult[] {
     const limit = options.limit ?? 12;
+    const applyCooldown = options.applyRecallCooldown ?? true;
     const ftsScores = new Map<string, number>();
     const tokens = extractSearchTokens(options.text);
     const ftsQuery = buildFtsTrigramQuery(tokens);
@@ -403,19 +561,36 @@ export class MemoryStore {
         vectorScore = Math.max(0, cosineSimilarity(options.queryEmbedding, decodeEmbedding(row.embedding)));
       }
 
-      const ageDays = Math.max(0, (nowMs - Date.parse(row.updated_at)) / 86_400_000);
+      const lastActivityMs = Math.max(
+        Date.parse(row.updated_at),
+        row.last_recalled_at ? Date.parse(row.last_recalled_at) : 0,
+      );
+      const ageDays = Math.max(0, (nowMs - lastActivityMs) / 86_400_000);
       const recencyBoost = 1 / (1 + ageDays / 30);
+      const heatBoost = Math.min(0.05, Math.log1p(row.recall_count ?? 0) * 0.015);
       const textSignal = Math.max(ftsScore, lexicalFallback);
 
       if (tokens.length > 0 && textSignal === 0 && vectorScore < 0.25) {
         continue;
       }
 
-      const score =
+      let cooldownPenalty = 0;
+      if (applyCooldown && row.last_recalled_at) {
+        const recalledAgoMinutes = Math.max(0, (nowMs - Date.parse(row.last_recalled_at)) / 60_000);
+        if (recalledAgoMinutes < 10) {
+          cooldownPenalty = 0.22 * (1 - recalledAgoMinutes / 10);
+        }
+      }
+
+      const score = Math.max(
+        0,
         textSignal * 0.45 +
-        vectorScore * 0.35 +
-        row.importance * 0.12 +
-        recencyBoost * 0.08;
+          vectorScore * 0.35 +
+          row.importance * 0.12 +
+          recencyBoost * 0.08 +
+          heatBoost -
+          cooldownPenalty,
+      );
 
       results.push({ record: rowToMemoryRecord(row), score });
     }
