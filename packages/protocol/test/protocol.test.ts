@@ -124,6 +124,25 @@ test("parseClientCommand parses valid commands and rejects malformed payloads", 
   if (harnessUpdate.kind === "harness.update") {
     assert.equal(harnessUpdate.settings.browserBackend, "follow_harness");
   }
+
+  const pauseCmd = parseClientCommand({
+    kind: "task.pause_user",
+    taskId: "task_12",
+    instructions: "Log in first",
+  });
+  assert.equal(pauseCmd.kind, "task.pause_user");
+  if (pauseCmd.kind === "task.pause_user") {
+    assert.equal(pauseCmd.instructions, "Log in first");
+  }
+
+  const relUpdate = parseClientCommand({
+    kind: "relationship.update",
+    patch: { companionName: "Livia", companionAvatar: "data:image/png;base64,abc" },
+  });
+  assert.equal(relUpdate.kind, "relationship.update");
+  if (relUpdate.kind === "relationship.update") {
+    assert.equal(relUpdate.patch.companionAvatar, "data:image/png;base64,abc");
+  }
 });
 
 test("parseDaemonEvent and parseTaskRecord validate discriminated task states", () => {

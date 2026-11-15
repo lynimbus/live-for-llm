@@ -69,6 +69,17 @@ export class BuiltinAgentRunner implements TaskRunner {
 
     for (let turn = 0; turn < this.maxTurns; turn++) {
       if (ctx.signal.aborted) return { kind: "cancelled" };
+      if (ctx.waitIfPaused) {
+        const wasPaused = await ctx.waitIfPaused();
+        if (ctx.signal.aborted) return { kind: "cancelled" };
+        if (wasPaused) {
+          messages.push({
+            role: "user",
+            content:
+              "User completed manual browser intervention and resumed the task. Call browser_snapshot first to inspect the updated page state before continuing.",
+          });
+        }
+      }
 
       const planLabel = `Planning step ${turn + 1}/${this.maxTurns}`;
       ctx.reportProgress(planLabel);

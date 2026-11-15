@@ -46,6 +46,7 @@ export interface MemorySearchResult {
 
 export interface RelationshipState {
   readonly companionName: string;
+  readonly companionAvatar?: string;
   readonly userName: string;
   readonly affinityScore: number;
   readonly currentMood: string;

@@ -56,6 +56,7 @@ export class CompanionRuntime {
     (decision: ApprovalDecision) => void
   >();
   private readonly pendingUserResumes = new Map<TaskId, () => void>();
+  private readonly manualPauseHandlers = new Map<TaskId, (instructions?: string) => void>();
 
   constructor(params: {
     readonly router: ModelRouter;
@@ -295,6 +296,46 @@ export class CompanionRuntime {
     this.activeAbortControllers.set(taskId, abortController);
     let lastShot: string | undefined;
     let lastUrl = "";
+    let manualPausePromise: Promise<void> | undefined;
+
+    const triggerManualPause = (instructions?: string) => {
+      if (manualPausePromise) return;
+      const reasonText =
+        instructions?.trim() || "请在浏览器界面完成登录或人工操作后点击继续";
+      manualPausePromise = new Promise<void>((resolve) => {
+        this.pendingUserResumes.set(taskId, () => {
+          this.pendingUserResumes.delete(taskId);
+          manualPausePromise = undefined;
+          commitTask({
+            kind: "running",
+            startedAt:
+              current.state.kind === "running"
+                ? current.state.startedAt
+                : new Date().toISOString(),
+            stepSummary: "Resuming after user intervention",
+            ...(lastShot ? { latestScreenshotBase64: lastShot } : {}),
+            ...(lastUrl ? { latestUrl: lastUrl } : {}),
+          });
+          emitTrace({
+            kind: "status",
+            title: "User resumed session",
+          });
+          resolve();
+        });
+      });
+      commitTask({
+        kind: "paused_for_user",
+        reason: "manual_intervention",
+        instructions: reasonText,
+        pausedAt: new Date().toISOString(),
+      });
+      emitTrace({
+        kind: "approval",
+        title: "Paused for manual intervention",
+        detail: reasonText,
+      });
+    };
+    this.manualPauseHandlers.set(taskId, triggerManualPause);
 
     void (async () => {
       const startSummary = `Starting ${runner.label}`;
@@ -419,6 +460,11 @@ export class CompanionRuntime {
                 detail: req.instructions,
               });
             }),
+          waitIfPaused: async () => {
+            if (!manualPausePromise) return false;
+            await manualPausePromise;
+            return true;
+          },
         });
 
         if (outcome.kind === "completed") {
@@ -474,10 +520,18 @@ export class CompanionRuntime {
       } finally {
         this.activeAbortControllers.delete(taskId);
         this.pendingUserResumes.delete(taskId);
+        this.manualPauseHandlers.delete(taskId);
       }
     })();
 
     return taskId;
+  }
+
+  pauseTaskForUser(taskId: TaskId, instructions?: string): boolean {
+    const handler = this.manualPauseHandlers.get(taskId);
+    if (!handler) return false;
+    handler(instructions);
+    return true;
   }
 
   resolveApproval(approvalId: ApprovalId, decision: ApprovalDecision): boolean {

@@ -409,6 +409,10 @@ export class CompanionDaemon {
         this.runtime.cancelTask(cmd.taskId);
         return;
       }
+      case "task.pause_user": {
+        this.runtime.pauseTaskForUser(cmd.taskId, cmd.instructions);
+        return;
+      }
       case "browser.resume_user": {
         this.runtime.resumePausedTask(cmd.taskId);
         return;
@@ -464,12 +468,20 @@ export class CompanionDaemon {
       }
       case "relationship.update": {
         const current = this.store.getRelationshipState();
-        const next = this.store.updateRelationshipState({
+        const nextBase = {
           ...current,
           ...(cmd.patch.companionName ? { companionName: cmd.patch.companionName } : {}),
           ...(cmd.patch.userName ? { userName: cmd.patch.userName } : {}),
           ...(cmd.patch.currentMood ? { currentMood: cmd.patch.currentMood } : {}),
-        });
+        };
+        if (cmd.patch.companionAvatar !== undefined) {
+          if (cmd.patch.companionAvatar) {
+            nextBase.companionAvatar = cmd.patch.companionAvatar;
+          } else {
+            delete nextBase.companionAvatar;
+          }
+        }
+        const next = this.store.updateRelationshipState(nextBase);
         this.broadcastDirect({
           kind: "relationship.updated",
           relationship: next,
@@ -527,7 +539,7 @@ export class CompanionDaemon {
           const convId = parseConversationId(
             url.searchParams.get("conversationId") ?? "conv_main",
           );
-          const tasks = this.store.listTasks(30);
+          const tasks = this.store.listTasks(100);
           writeJson(res, 200, {
             conversationId: convId,
             conversations: this.store.listConversations(),
@@ -550,6 +562,21 @@ export class CompanionDaemon {
           const profileId = parseBrowserProfileId("default_user");
           const rawTaskId = typeof body["taskId"] === "string" ? body["taskId"].trim() : "";
           const taskId = rawTaskId ? parseTaskId(rawTaskId) : undefined;
+
+          const snapshotPayload = (
+            snap: Awaited<ReturnType<PersistentBrowserManager["captureSnapshot"]>>,
+          ) => ({
+            url: snap.url,
+            title: snap.title,
+            scrollY: snap.scrollY,
+            scrollHeight: snap.scrollHeight,
+            textExcerpt: snap.textExcerpt,
+            interactiveElements: snap.interactiveElements,
+            screenshotBase64: snap.screenshotBase64,
+            mimeType: snap.mimeType,
+            capturedAt: snap.capturedAt,
+            headless: this.browser.getSessionMode(profileId).headless,
+          });
 
           const recordBrowserStep = (
             label: string,
@@ -588,12 +615,10 @@ export class CompanionDaemon {
             const snap = await this.browser.navigate({ profileId, url: searchUrl });
             recordBrowserStep(`Searched "${query}" (${engine})`, snap);
             writeJson(res, 200, {
-              url: snap.url,
-              title: snap.title,
+              ...snapshotPayload(snap),
               results: snap.interactiveElements
                 .filter((el) => el.href && el.text)
                 .slice(0, 15),
-              textExcerpt: snap.textExcerpt,
             });
             return;
           }
@@ -603,16 +628,12 @@ export class CompanionDaemon {
               writeJson(res, 400, { error: "Missing url" });
               return;
             }
-            const snap = await this.browser.navigate({ profileId, url: targetUrl });
+            const normalizedUrl = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(targetUrl)
+              ? targetUrl
+              : `https://${targetUrl}`;
+            const snap = await this.browser.navigate({ profileId, url: normalizedUrl });
             recordBrowserStep(`Loaded ${snap.title || snap.url}`, snap);
-            writeJson(res, 200, {
-              url: snap.url,
-              title: snap.title,
-              scrollY: snap.scrollY,
-              scrollHeight: snap.scrollHeight,
-              textExcerpt: snap.textExcerpt,
-              interactiveElements: snap.interactiveElements,
-            });
+            writeJson(res, 200, snapshotPayload(snap));
             return;
           }
           if (action === "click") {
@@ -627,9 +648,7 @@ export class CompanionDaemon {
             const snap = await this.browser.captureSnapshot({ profileId });
             recordBrowserStep(`Clicked ${selector}`, snap);
             writeJson(res, 200, {
-              url: snap.url,
-              title: snap.title,
-              textExcerpt: snap.textExcerpt,
+              ...snapshotPayload(snap),
               interactiveElements: snap.interactiveElements.slice(0, 25),
             });
             return;
@@ -645,14 +664,14 @@ export class CompanionDaemon {
             await page.fill(selector, value, { timeout: 10_000 });
             const snap = await this.browser.captureSnapshot({ profileId });
             recordBrowserStep(`Filled ${selector}`, snap);
-            writeJson(res, 200, { ok: true, url: snap.url });
+            writeJson(res, 200, { ok: true, ...snapshotPayload(snap) });
             return;
           }
           if (action === "press") {
             const key = typeof body["key"] === "string" ? body["key"] : "Enter";
             const snap = await this.browser.pressKey({ profileId, key });
             recordBrowserStep(`Pressed ${key}`, snap);
-            writeJson(res, 200, { url: snap.url, title: snap.title, textExcerpt: snap.textExcerpt });
+            writeJson(res, 200, snapshotPayload(snap));
             return;
           }
           if (action === "scroll") {
@@ -660,25 +679,69 @@ export class CompanionDaemon {
             const direction = dir === "up" || dir === "top" || dir === "bottom" ? dir : "down";
             const snap = await this.browser.scroll({ profileId, direction });
             recordBrowserStep(`Scrolled ${direction}`, snap);
-            writeJson(res, 200, {
-              url: snap.url,
-              scrollY: snap.scrollY,
-              scrollHeight: snap.scrollHeight,
-              textExcerpt: snap.textExcerpt,
-            });
+            writeJson(res, 200, snapshotPayload(snap));
+            return;
+          }
+          if (action === "interact") {
+            const mode = typeof body["mode"] === "string" ? body["mode"] : "";
+            let snap: Awaited<ReturnType<PersistentBrowserManager["captureSnapshot"]>>;
+            if (mode === "click_at") {
+              const x = Number(body["x"]);
+              const y = Number(body["y"]);
+              if (!Number.isFinite(x) || !Number.isFinite(y)) {
+                writeJson(res, 400, { error: "Invalid coordinates" });
+                return;
+              }
+              snap = await this.browser.clickAt({ profileId, x, y });
+              recordBrowserStep(`User clicked (${Math.round(x)}, ${Math.round(y)})`, snap);
+            } else if (mode === "type") {
+              const text = typeof body["text"] === "string" ? body["text"] : "";
+              const pressEnter = Boolean(body["pressEnter"]);
+              snap = await this.browser.typeText({ profileId, text, pressEnter });
+              recordBrowserStep(
+                pressEnter ? "User entered input and submitted" : "User typed in browser",
+                snap,
+              );
+            } else if (mode === "back") {
+              snap = await this.browser.goBack({ profileId });
+              recordBrowserStep("Navigated back", snap);
+            } else if (mode === "reload") {
+              snap = await this.browser.captureSnapshot({ profileId });
+              recordBrowserStep("Refreshed viewport", snap);
+            } else {
+              writeJson(res, 400, { error: `Unknown interact mode: ${mode}` });
+              return;
+            }
+            writeJson(res, 200, snapshotPayload(snap));
+            return;
+          }
+          if (action === "open_window") {
+            const desiredHeadless = body["headless"] === true;
+            const targetUrl = typeof body["url"] === "string" ? body["url"].trim() : "";
+            try {
+              const page = await this.browser.openSession({ profileId, headless: desiredHeadless });
+              if (targetUrl && targetUrl !== "about:blank" && page.url() === "about:blank") {
+                await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+              }
+              const snap = await this.browser.captureSnapshot({ profileId });
+              recordBrowserStep(
+                desiredHeadless
+                  ? "Switched browser back to headless background mode"
+                  : "Opened persistent browser window for manual login",
+                snap,
+              );
+              writeJson(res, 200, snapshotPayload(snap));
+            } catch (err) {
+              writeJson(res, 400, {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
             return;
           }
           if (action === "snapshot") {
             const snap = await this.browser.captureSnapshot({ profileId });
             recordBrowserStep(`Captured snapshot`, snap);
-            writeJson(res, 200, {
-              url: snap.url,
-              title: snap.title,
-              scrollY: snap.scrollY,
-              scrollHeight: snap.scrollHeight,
-              textExcerpt: snap.textExcerpt,
-              interactiveElements: snap.interactiveElements,
-            });
+            writeJson(res, 200, snapshotPayload(snap));
             return;
           }
         }

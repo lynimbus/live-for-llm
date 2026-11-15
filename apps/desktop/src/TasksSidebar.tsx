@@ -98,8 +98,12 @@ export function TasksSidebar(props: TasksSidebarProps) {
     toggledMap.update((prev) => ({ ...prev, [task.id]: nextVal }));
   };
 
+  const sessionTasks = () =>
+    store.tasks().filter((item) => item.conversationId === store.conversationId());
+
   const inspectTask = (task: TaskRecord) => {
     animateLayout("ease");
+    store.sidebarOpen.set(false);
     store.inspectedTaskId.set(task.id);
     store.activePage.set("task_detail");
   };
@@ -148,7 +152,7 @@ export function TasksSidebar(props: TasksSidebarProps) {
 
       <Scroll style={{ flex: 1, minWidth: 0 }} contentStyle={{ gap: 8 }}>
         <If
-          when={store.tasks().length > 0}
+          when={sessionTasks().length > 0}
           else={
             <View class="p-4 rounded-xl border border-border bg-secondary" style={{ gap: 6 }}>
               <Text class="text-xs font-semibold text-foreground">{t("tasksEmptyTitle")}</Text>
@@ -171,7 +175,7 @@ export function TasksSidebar(props: TasksSidebarProps) {
             </View>
           }
         >
-          <Each of={store.tasks()}>
+          <Each of={sessionTasks()}>
             {(task) => {
               const badge = () => getTaskBadge(task());
               const expanded = () => isExpanded(task());
@@ -255,8 +259,14 @@ export function TasksSidebar(props: TasksSidebarProps) {
                           {(b64) => (
                             <Image
                               testID={`task-shot-${task().id}`}
-                              src={`data:image/png;base64,${b64()}`}
-                              style={{ width: "100%", height: 120, borderRadius: 6 }}
+                              src={`data:image/jpeg;base64,${b64()}`}
+                              style={{
+                                width: "100%",
+                                height: 140,
+                                borderRadius: 6,
+                                objectFit: "contain",
+                                backgroundColor: "#0d0d0d",
+                              }}
                             />
                           )}
                         </If>

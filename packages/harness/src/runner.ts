@@ -40,6 +40,8 @@ export interface TaskRunContext {
   reportTrace?(entry: TaskTraceInput): void;
   requestApproval(input: ApprovalPromptInput): Promise<ApprovalDecision>;
   requestUserPause(input: UserPauseInput): Promise<void>;
+  /** Resolves immediately (`false`) unless the user paused the task; waits until resumed (`true`). */
+  waitIfPaused?(): Promise<boolean>;
 }
 
 export type TaskRunOutcome =

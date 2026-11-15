@@ -1,7 +1,7 @@
 import type { TaskRecord, TaskTraceEntry, TaskTraceKind } from "@live-for-llm/protocol";
 import { DaemonDefaults } from "companiondesktop/native";
 import { effect, Image, Scroll, type ScrollRef, signal, Text, View } from "nsh";
-import { Button } from "nsh/base";
+import { Button, Input } from "nsh/base";
 import { currentLocale, t } from "./i18n.ts";
 import { CloseIcon } from "./icons.tsx";
 import {
@@ -11,9 +11,38 @@ import {
   createEnterMotion,
 } from "./motion.ts";
 import type { CompanionUiStore } from "./state.ts";
+import { SelectablePill } from "./ui.tsx";
 
 export interface TaskDetailViewProps {
   readonly store: CompanionUiStore;
+}
+
+type InspectorViewMode = "split" | "browser" | "traces";
+
+const BROWSER_VIEWPORT_WIDTH = 1280;
+const BROWSER_VIEWPORT_HEIGHT = 800;
+
+function mapContainPointToViewport(
+  pos: { readonly x: number; readonly y: number },
+  boxSize: { readonly width: number; readonly height: number },
+): { readonly x: number; readonly y: number } {
+  if (boxSize.width <= 0 || boxSize.height <= 0) {
+    return { x: BROWSER_VIEWPORT_WIDTH / 2, y: BROWSER_VIEWPORT_HEIGHT / 2 };
+  }
+  const scale = Math.min(
+    boxSize.width / BROWSER_VIEWPORT_WIDTH,
+    boxSize.height / BROWSER_VIEWPORT_HEIGHT,
+  );
+  const renderedW = BROWSER_VIEWPORT_WIDTH * scale;
+  const renderedH = BROWSER_VIEWPORT_HEIGHT * scale;
+  const offsetX = (boxSize.width - renderedW) / 2;
+  const offsetY = (boxSize.height - renderedH) / 2;
+  const vx = (pos.x - offsetX) / scale;
+  const vy = (pos.y - offsetY) / scale;
+  return {
+    x: Math.max(0, Math.min(BROWSER_VIEWPORT_WIDTH - 1, Math.round(vx))),
+    y: Math.max(0, Math.min(BROWSER_VIEWPORT_HEIGHT - 1, Math.round(vy))),
+  };
 }
 
 function getTraceKindMeta(kind: TaskTraceKind, isError?: boolean): {
@@ -85,13 +114,18 @@ function formatOutcomeText(state: TaskRecord["state"]): string {
   return "";
 }
 
-/** Alma-style live execution inspector showing real-time LLM steps, CLI output, and browser viewport. */
+/** Alma-style live execution inspector with enlarged interactive browser takeover & trace stream. */
 export function TaskDetailView(props: TaskDetailViewProps) {
   const { store } = props;
   const viewMotion = createEnterMotion("fadeInUp", 160);
+  const viewMode = signal<InspectorViewMode>("split");
   const traceScrollRef = signal<ScrollRef | undefined>(undefined);
   const traceViewportHeight = signal(0);
   const traceContentHeight = signal(0);
+  const shotBoxSize = signal({ width: 640, height: 360 });
+  const browserUrlDraft = signal("");
+  const browserUrlEditing = signal(false);
+  const browserTypeDraft = signal("");
 
   const currentTask = (): TaskRecord | undefined => {
     const id = store.inspectedTaskId();
@@ -124,7 +158,7 @@ export function TaskDetailView(props: TaskDetailViewProps) {
     return undefined;
   };
 
-  const showBrowserPane = (): boolean => {
+  const isBrowserTask = (): boolean => {
     const task = currentTask();
     if (!task) return false;
     return (
@@ -133,6 +167,16 @@ export function TaskDetailView(props: TaskDetailViewProps) {
       browserFrame() !== undefined
     );
   };
+
+  const showBrowserPane = (): boolean => isBrowserTask() && viewMode() !== "traces";
+  const showTracePane = (): boolean => !isBrowserTask() || viewMode() !== "browser";
+
+  effect(() => {
+    const frameUrl = browserFrame()?.url;
+    if (frameUrl && !browserUrlEditing()) {
+      browserUrlDraft.set(frameUrl);
+    }
+  });
 
   effect(() => {
     const list = traces();
@@ -147,6 +191,44 @@ export function TaskDetailView(props: TaskDetailViewProps) {
   const goBack = () => {
     animateLayout("ease");
     store.activePage.set("chat");
+  };
+
+  const switchMode = (next: InspectorViewMode) => {
+    animateLayout("ease");
+    viewMode.set(next);
+    if (next === "browser") {
+      store.sidebarOpen.set(false);
+      store.drawerOpen.set(false);
+    }
+  };
+
+  const splitViewportHeight = () => {
+    const width = shotBoxSize().width;
+    const computed = width > 120 ? Math.round((width * BROWSER_VIEWPORT_HEIGHT) / BROWSER_VIEWPORT_WIDTH) : 320;
+    return Math.max(280, Math.min(440, computed));
+  };
+
+  const handleViewportPress = async (position: { readonly x: number; readonly y: number }) => {
+    const task = currentTask();
+    if (!task) return;
+    const pt = mapContainPointToViewport(position, shotBoxSize());
+    await store.interactBrowser({ taskId: task.id, mode: "click_at", x: pt.x, y: pt.y });
+  };
+
+  const handleNavigate = async () => {
+    const task = currentTask();
+    const target = browserUrlDraft().trim();
+    if (!task || !target) return;
+    browserUrlEditing.set(false);
+    await store.interactBrowser({ taskId: task.id, mode: "navigate", url: target });
+  };
+
+  const handleTypeSend = async (pressEnter: boolean) => {
+    const task = currentTask();
+    const text = browserTypeDraft();
+    if (!task || (!text && !pressEnter)) return;
+    browserTypeDraft.set("");
+    await store.interactBrowser({ taskId: task.id, mode: "type", text, pressEnter });
   };
 
   return (
@@ -190,42 +272,79 @@ export function TaskDetailView(props: TaskDetailViewProps) {
             {(task) => {
               const meta = () => getTaskStatusMeta(task());
               return (
-                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <View style={{ flex: 1, minWidth: 0, overflow: "hidden", gap: 2 }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 6,
+                      minWidth: 0,
+                      overflow: "hidden",
+                    }}
+                  >
                     <View
                       class={meta().dotClass}
                       style={{ width: 8, height: 8, borderRadius: 4, flexShrink: 0 }}
                     />
-                    <Text class="text-sm font-semibold text-foreground truncate">
+                    <Text
+                      class="text-sm font-semibold text-foreground truncate"
+                      style={{ flex: 1, minWidth: 0 }}
+                    >
                       {task().title}
                     </Text>
                   </View>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Text class="text-[11px] text-muted-foreground">
-                      {`${meta().label} · ${t("taskDetailRunnerLabel", { runner: task().runnerId })} · ${DaemonDefaults.shortId(task().id)} · ${t("taskDetailStepsCount", { count: traces().length })}`}
-                    </Text>
-                  </View>
+                  <Text class="text-[11px] text-muted-foreground truncate" style={{ minWidth: 0 }}>
+                    {`${meta().label} · ${t("taskDetailRunnerLabel", { runner: task().runnerId })} · ${DaemonDefaults.shortId(task().id)} · ${t("taskDetailStepsCount", { count: traces().length })}`}
+                  </Text>
                 </View>
               );
             }}
           </If>
         </View>
 
-        <Button
-          testID="task-detail-close-btn"
-          tooltip={t("btnClose")}
-          onPress={goBack}
-          class="p-1.5 rounded-lg"
-          style={[BUTTON_MOTION_STYLE, { flexShrink: 0 }]}
-          hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
-          activeStyle={BUTTON_ACTIVE_STYLE}
-        >
-          <CloseIcon size={16} colorToken="muted-foreground" />
-        </Button>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <If when={isBrowserTask()}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <SelectablePill
+                testID="task-view-split"
+                compact
+                label={() => t("taskViewSplit")}
+                selected={() => viewMode() === "split"}
+                onPress={() => switchMode("split")}
+              />
+              <SelectablePill
+                testID="task-view-browser"
+                compact
+                label={() => t("taskViewBrowser")}
+                selected={() => viewMode() === "browser"}
+                onPress={() => switchMode("browser")}
+              />
+              <SelectablePill
+                testID="task-view-traces"
+                compact
+                label={() => t("taskViewTraces")}
+                selected={() => viewMode() === "traces"}
+                onPress={() => switchMode("traces")}
+              />
+            </View>
+          </If>
+
+          <Button
+            testID="task-detail-close-btn"
+            tooltip={t("btnClose")}
+            onPress={goBack}
+            class="p-1.5 rounded-lg"
+            style={[BUTTON_MOTION_STYLE, { flexShrink: 0 }]}
+            hoverStyle={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+            activeStyle={BUTTON_ACTIVE_STYLE}
+          >
+            <CloseIcon size={16} colorToken="muted-foreground" />
+          </Button>
+        </View>
       </View>
 
       {/* Main inspector body */}
-      <View style={{ flex: 1, padding: 14, gap: 12, minWidth: 0, overflow: "hidden" }}>
+      <View style={{ flex: 1, padding: 14, gap: 10, minWidth: 0, overflow: "hidden" }}>
         <If when={currentTask()}>
           {(task) => (
             <If
@@ -244,12 +363,13 @@ export function TaskDetailView(props: TaskDetailViewProps) {
                   justifyContent: "space-between",
                   gap: 8,
                   flexWrap: "wrap",
+                  flexShrink: 0,
                 }}
               >
                 <Text class="text-xs text-muted-foreground" style={{ flex: 1, minWidth: 160 }}>
                   {formatActiveStep(task().state)}
                 </Text>
-                <View style={{ flexDirection: "row", gap: 6, flexShrink: 0 }}>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, flexShrink: 0 }}>
                   <If when={task().state.kind === "awaiting_approval"}>
                     <Button
                       testID={`detail-approve-${task().id}`}
@@ -282,6 +402,19 @@ export function TaskDetailView(props: TaskDetailViewProps) {
                       <Text class="text-xs font-semibold text-foreground">{t("btnDeny")}</Text>
                     </Button>
                   </If>
+                  <If when={task().state.kind === "running" && isBrowserTask()}>
+                    <Button
+                      testID={`detail-pause-${task().id}`}
+                      onPress={() => void store.pauseBrowserTask(task().id)}
+                      class="px-3 py-1 rounded-md bg-secondary border border-border"
+                      style={BUTTON_MOTION_STYLE}
+                      activeStyle={BUTTON_ACTIVE_STYLE}
+                    >
+                      <Text class="text-xs font-medium text-foreground">
+                        {t("taskPauseForLoginBtn")}
+                      </Text>
+                    </Button>
+                  </If>
                   <If when={task().state.kind === "paused_for_user"}>
                     <Button
                       testID={`detail-resume-${task().id}`}
@@ -291,7 +424,7 @@ export function TaskDetailView(props: TaskDetailViewProps) {
                       activeStyle={BUTTON_ACTIVE_STYLE}
                     >
                       <Text class="text-xs font-semibold text-primary-foreground">
-                        {t("btnResumeLogin")}
+                        {t("taskResumeAfterLoginBtn")}
                       </Text>
                     </Button>
                   </If>
@@ -319,196 +452,392 @@ export function TaskDetailView(props: TaskDetailViewProps) {
           )}
         </If>
 
-        {/* Live Browser Viewport Panel (shown for browser tasks / screenshots) */}
+        {/* Live Interactive Browser Viewport Panel */}
         <If when={showBrowserPane()}>
           <View
             testID="task-detail-browser-pane"
             class="rounded-xl border border-border bg-card"
-            style={{ overflow: "hidden", flexShrink: 0 }}
+            style={{
+              overflow: "hidden",
+              ...(viewMode() === "browser" ? { flex: 1, minHeight: 0 } : { flexShrink: 0 }),
+            }}
           >
+            {/* Interactive Navigation & Window Takeover Bar */}
             <View
               class="px-3 py-2 border-b border-border bg-secondary"
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
+                gap: 6,
+                flexWrap: "wrap",
               }}
             >
-              <Text class="text-xs font-semibold text-foreground" style={{ flexShrink: 0 }}>
-                {t("taskDetailBrowserTitle")}
-              </Text>
-              <View
-                class="px-2.5 py-1 rounded-md bg-background border border-border"
-                style={{ flex: 1, minWidth: 0, overflow: "hidden" }}
+              <Button
+                testID="task-browser-back-btn"
+                onPress={() => {
+                  const task = currentTask();
+                  if (task) void store.interactBrowser({ taskId: task.id, mode: "back" });
+                }}
+                class="px-2 py-1 rounded-md bg-background border border-border"
+                style={BUTTON_MOTION_STYLE}
+                activeStyle={BUTTON_ACTIVE_STYLE}
               >
-                <Text testID="task-detail-browser-url" class="text-[11px] text-muted-foreground truncate">
+                <Text class="text-xs text-foreground">{t("browserBackBtn")}</Text>
+              </Button>
+              <Button
+                testID="task-browser-refresh-btn"
+                onPress={() => {
+                  const task = currentTask();
+                  if (task) void store.interactBrowser({ taskId: task.id, mode: "reload" });
+                }}
+                class="px-2 py-1 rounded-md bg-background border border-border"
+                style={BUTTON_MOTION_STYLE}
+                activeStyle={BUTTON_ACTIVE_STYLE}
+              >
+                <Text class="text-xs text-foreground">{t("browserRefreshBtn")}</Text>
+              </Button>
+              <Button
+                testID="task-browser-scroll-up"
+                onPress={() => {
+                  const task = currentTask();
+                  if (task)
+                    void store.interactBrowser({
+                      taskId: task.id,
+                      mode: "scroll",
+                      direction: "up",
+                    });
+                }}
+                class="px-2 py-1 rounded-md bg-background border border-border"
+                style={BUTTON_MOTION_STYLE}
+                activeStyle={BUTTON_ACTIVE_STYLE}
+              >
+                <Text class="text-xs text-foreground">↑</Text>
+              </Button>
+              <Button
+                testID="task-browser-scroll-down"
+                onPress={() => {
+                  const task = currentTask();
+                  if (task)
+                    void store.interactBrowser({
+                      taskId: task.id,
+                      mode: "scroll",
+                      direction: "down",
+                    });
+                }}
+                class="px-2 py-1 rounded-md bg-background border border-border"
+                style={BUTTON_MOTION_STYLE}
+                activeStyle={BUTTON_ACTIVE_STYLE}
+              >
+                <Text class="text-xs text-foreground">↓</Text>
+              </Button>
+
+              <Input
+                testID="task-browser-url-input"
+                value={browserUrlDraft()}
+                placeholder={t("browserUrlPlaceholder")}
+                submitBehavior="submit"
+                onChange={(e) => {
+                  browserUrlEditing.set(true);
+                  browserUrlDraft.set(e.value);
+                }}
+                onBlur={() => browserUrlEditing.set(false)}
+                onSubmit={() => void handleNavigate()}
+                class="flex-1 px-2.5 py-1 rounded-md bg-background border border-border text-[11px] text-foreground"
+                style={{ minWidth: 160 }}
+              />
+              <Button
+                testID="task-browser-go-btn"
+                onPress={() => void handleNavigate()}
+                class="px-2.5 py-1 rounded-md bg-primary"
+                style={BUTTON_MOTION_STYLE}
+                activeStyle={BUTTON_ACTIVE_STYLE}
+              >
+                <Text class="text-[11px] font-semibold text-primary-foreground">
+                  {t("browserGoBtn")}
+                </Text>
+              </Button>
+
+              <Button
+                testID="task-open-window-btn"
+                onPress={() => {
+                  const task = currentTask();
+                  void store.openBrowserWindow({
+                    ...(task ? { taskId: task.id } : {}),
+                    ...(browserFrame()?.url || browserUrlDraft().trim()
+                      ? { url: browserUrlDraft().trim() || browserFrame()?.url }
+                      : {}),
+                    headless: store.browserWindowOpen(),
+                  });
+                }}
+                class={
+                  store.browserWindowOpen()
+                    ? "px-2.5 py-1 rounded-md bg-primary"
+                    : "px-2.5 py-1 rounded-md bg-background border border-border"
+                }
+                style={[BUTTON_MOTION_STYLE, { flexShrink: 0 }]}
+                activeStyle={BUTTON_ACTIVE_STYLE}
+              >
+                <Text
+                  class={
+                    store.browserWindowOpen()
+                      ? "text-[11px] font-semibold text-primary-foreground"
+                      : "text-[11px] font-medium text-foreground"
+                  }
+                >
+                  {store.browserWindowOpen()
+                    ? t("browserReturnHeadlessBtn")
+                    : t("browserOpenWindowBtn")}
+                </Text>
+              </Button>
+            </View>
+
+            {/* Full-aspect uncropped interactive viewport canvas */}
+            <View
+              onLayout={(e) => shotBoxSize.set(e.bounds.size)}
+              onPress={(e) => void handleViewportPress(e.position)}
+              style={{
+                backgroundColor: "#0d0d0d",
+                alignItems: "center",
+                justifyContent: "center",
+                overflow: "hidden",
+                ...(viewMode() === "browser"
+                  ? { flex: 1, minHeight: 320 }
+                  : { height: splitViewportHeight() }),
+              }}
+            >
+              <If
+                when={browserFrame()}
+                else={
+                  <Text class="text-xs text-muted-foreground" style={{ padding: 20 }}>
+                    {t("taskDetailWaitingBrowser")}
+                  </Text>
+                }
+              >
+                {(frame) => (
+                  <Image
+                    testID="task-detail-browser-shot"
+                    src={`data:image/jpeg;base64,${frame().base64}`}
+                    style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                  />
+                )}
+              </If>
+            </View>
+
+            {/* Direct typing & URL status strip */}
+            <View
+              class="px-3 py-2 border-t border-border bg-secondary"
+              style={{ gap: 6 }}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Input
+                  testID="task-browser-type-input"
+                  value={browserTypeDraft()}
+                  placeholder={t("browserTypePlaceholder")}
+                  submitBehavior="submit"
+                  onChange={(e) => browserTypeDraft.set(e.value)}
+                  onSubmit={() => void handleTypeSend(true)}
+                  class="flex-1 px-2.5 py-1 rounded-md bg-background border border-border text-xs text-foreground"
+                  style={{ minWidth: 0 }}
+                />
+                <Button
+                  testID="task-browser-type-btn"
+                  onPress={() => void handleTypeSend(false)}
+                  class="px-2.5 py-1 rounded-md bg-background border border-border"
+                  style={[BUTTON_MOTION_STYLE, { flexShrink: 0 }]}
+                  activeStyle={BUTTON_ACTIVE_STYLE}
+                >
+                  <Text class="text-xs text-foreground">{t("browserTypeSendBtn")}</Text>
+                </Button>
+                <Button
+                  testID="task-browser-enter-btn"
+                  onPress={() => void handleTypeSend(true)}
+                  class="px-2.5 py-1 rounded-md bg-primary"
+                  style={[BUTTON_MOTION_STYLE, { flexShrink: 0 }]}
+                  activeStyle={BUTTON_ACTIVE_STYLE}
+                >
+                  <Text class="text-xs font-semibold text-primary-foreground">
+                    {t("browserTypeEnterBtn")}
+                  </Text>
+                </Button>
+              </View>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <Text class="text-[10px] text-muted-foreground truncate" style={{ flex: 1, minWidth: 0 }}>
+                  {t("browserInteractiveHint")}
+                </Text>
+                <Text
+                  testID="task-detail-browser-url"
+                  class="text-[10px] text-muted-foreground truncate"
+                  style={{ maxWidth: 260 }}
+                >
                   {browserFrame()?.url || "about:blank"}
                 </Text>
               </View>
             </View>
-
-            <If
-              when={browserFrame()}
-              else={
-                <View
-                  style={{
-                    height: 170,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: 16,
-                  }}
-                >
-                  <Text class="text-xs text-muted-foreground">{t("taskDetailWaitingBrowser")}</Text>
-                </View>
-              }
-            >
-              {(frame) => (
-                <Image
-                  testID="task-detail-browser-shot"
-                  src={`data:image/jpeg;base64,${frame().base64}`}
-                  style={{ width: "100%", height: 230 }}
-                />
-              )}
-            </If>
           </View>
         </If>
 
         {/* Real-time LLM / CLI Action Stream */}
-        <View
-          class="rounded-xl border border-border bg-card"
-          style={{ flex: 1, minHeight: 0, overflow: "hidden" }}
-        >
-          <View class="px-3 py-2 border-b border-border">
-            <Text class="text-xs font-semibold text-foreground">
-              {t("taskDetailTimelineTitle")}
-            </Text>
-          </View>
-
-          <Scroll
-            ref={(el) => traceScrollRef.set(el)}
-            onLayout={(e) => traceViewportHeight.set(e.bounds.size.height)}
-            style={{ flex: 1 }}
-            contentStyle={{ padding: 12, gap: 8 }}
+        <If when={showTracePane()}>
+          <View
+            class="rounded-xl border border-border bg-card"
+            style={{ flex: 1, minHeight: 160, overflow: "hidden" }}
           >
-            <View
-              onLayout={(e) => traceContentHeight.set(e.bounds.size.height)}
-              style={{ gap: 8 }}
+            <View class="px-3 py-2 border-b border-border">
+              <Text class="text-xs font-semibold text-foreground">
+                {t("taskDetailTimelineTitle")}
+              </Text>
+            </View>
+
+            <Scroll
+              ref={(el) => traceScrollRef.set(el)}
+              onLayout={(e) => traceViewportHeight.set(e.bounds.size.height)}
+              style={{ flex: 1 }}
+              contentStyle={{ padding: 12, gap: 8 }}
             >
-              <If
-                when={traces().length > 0}
-                else={
-                  <Text class="text-xs text-muted-foreground" style={{ paddingVertical: 8 }}>
-                    {t("taskDetailNoTraces")}
-                  </Text>
-                }
+              <View
+                onLayout={(e) => traceContentHeight.set(e.bounds.size.height)}
+                style={{ gap: 8 }}
               >
-                <Each of={traces()}>
-                  {(entry) => {
-                    const meta = () => getTraceKindMeta(entry().kind, entry().isError);
-                    return (
-                      <View
-                        testID={`trace-item-${entry().id}`}
-                        class="p-2.5 rounded-lg border border-border bg-secondary"
-                        style={{ gap: 4 }}
-                      >
+                <If
+                  when={traces().length > 0}
+                  else={
+                    <Text class="text-xs text-muted-foreground" style={{ paddingVertical: 8 }}>
+                      {t("taskDetailNoTraces")}
+                    </Text>
+                  }
+                >
+                  <Each of={traces()}>
+                    {(entry) => {
+                      const meta = () => getTraceKindMeta(entry().kind, entry().isError);
+                      return (
                         <View
-                          style={{
-                            flexDirection: "row",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: 8,
-                          }}
+                          testID={`trace-item-${entry().id}`}
+                          class="p-2.5 rounded-lg border border-border bg-secondary"
+                          style={{ gap: 5, overflow: "hidden" }}
                         >
                           <View
                             style={{
                               flexDirection: "row",
                               alignItems: "center",
-                              gap: 6,
-                              flex: 1,
+                              justifyContent: "space-between",
+                              gap: 8,
                               minWidth: 0,
                             }}
                           >
-                            <View class={`px-1.5 py-0.5 rounded ${meta().badgeClass}`}>
-                              <Text class="text-[10px] font-semibold">{meta().label}</Text>
+                            <View
+                              style={{
+                                flexDirection: "row",
+                                alignItems: "center",
+                                gap: 6,
+                                flex: 1,
+                                minWidth: 0,
+                                overflow: "hidden",
+                              }}
+                            >
+                              <View
+                                class={`px-1.5 py-0.5 rounded ${meta().badgeClass}`}
+                                style={{ flexShrink: 0 }}
+                              >
+                                <Text class="text-[10px] font-semibold">{meta().label}</Text>
+                              </View>
+                              <If when={entry().toolName}>
+                                {(toolName) => (
+                                  <View
+                                    class="px-1.5 py-0.5 rounded bg-background border border-border"
+                                    style={{ flexShrink: 0 }}
+                                  >
+                                    <Text class="text-[10px] text-foreground">{toolName()}</Text>
+                                  </View>
+                                )}
+                              </If>
                             </View>
-                            <If when={entry().toolName}>
-                              {(toolName) => (
-                                <View class="px-1.5 py-0.5 rounded bg-background border border-border">
-                                  <Text class="text-[10px] text-foreground">{toolName()}</Text>
-                                </View>
-                              )}
-                            </If>
-                            <Text class="text-xs font-medium text-foreground truncate">
-                              {entry().title}
+                            <Text class="text-[10px] text-muted-foreground" style={{ flexShrink: 0 }}>
+                              {formatTraceTime(entry().createdAt)}
                             </Text>
                           </View>
-                          <Text class="text-[10px] text-muted-foreground" style={{ flexShrink: 0 }}>
-                            {formatTraceTime(entry().createdAt)}
+
+                          <Text
+                            class="text-xs font-medium text-foreground"
+                            style={{ lineHeight: 17 }}
+                          >
+                            {entry().title}
                           </Text>
+
+                          <If when={entry().url}>
+                            {(url) => (
+                              <Text class="text-[11px] text-muted-foreground truncate">
+                                {url()}
+                              </Text>
+                            )}
+                          </If>
+
+                          <If when={entry().detail}>
+                            {(detail) => (
+                              <Text
+                                class={
+                                  entry().isError
+                                    ? "text-[11px] text-destructive"
+                                    : "text-[11px] text-muted-foreground"
+                                }
+                                style={{ lineHeight: 16 }}
+                              >
+                                {detail()}
+                              </Text>
+                            )}
+                          </If>
                         </View>
+                      );
+                    }}
+                  </Each>
+                </If>
 
-                        <If when={entry().url}>
-                          {(url) => (
-                            <Text class="text-[11px] text-muted-foreground truncate">
-                              {url()}
-                            </Text>
-                          )}
-                        </If>
-
-                        <If when={entry().detail}>
-                          {(detail) => (
-                            <Text
-                              class={
-                                entry().isError
-                                  ? "text-[11px] text-destructive"
-                                  : "text-[11px] text-muted-foreground"
-                              }
-                              style={{ lineHeight: 16 }}
-                            >
-                              {detail()}
-                            </Text>
-                          )}
-                        </If>
-                      </View>
-                    );
-                  }}
-                </Each>
-              </If>
-
-              <If when={currentTask()}>
-                {(task) => (
-                  <If when={task().state.kind === "completed" || task().state.kind === "failed"}>
-                    <View
-                      class={
-                        task().state.kind === "failed"
-                          ? "p-3 rounded-lg border border-destructive bg-secondary"
-                          : "p-3 rounded-lg border border-border bg-secondary"
-                      }
-                      style={{ gap: 4, marginTop: 4 }}
-                    >
-                      <Text class="text-xs font-semibold text-foreground">
-                        {task().state.kind === "completed"
-                          ? t("taskBadgeCompleted")
-                          : t("taskBadgeFailed")}
-                      </Text>
-                      <Text
+                <If when={currentTask()}>
+                  {(task) => (
+                    <If when={task().state.kind === "completed" || task().state.kind === "failed"}>
+                      <View
                         class={
                           task().state.kind === "failed"
-                            ? "text-xs text-destructive"
-                            : "text-xs text-foreground"
+                            ? "p-3 rounded-lg border border-destructive bg-secondary"
+                            : "p-3 rounded-lg border border-border bg-secondary"
                         }
-                        style={{ lineHeight: 18 }}
+                        style={{ gap: 4, marginTop: 4 }}
                       >
-                        {formatOutcomeText(task().state)}
-                      </Text>
-                    </View>
-                  </If>
-                )}
-              </If>
-            </View>
-          </Scroll>
-        </View>
+                        <Text class="text-xs font-semibold text-foreground">
+                          {task().state.kind === "completed"
+                            ? t("taskBadgeCompleted")
+                            : t("taskBadgeFailed")}
+                        </Text>
+                        <Text
+                          class={
+                            task().state.kind === "failed"
+                              ? "text-xs text-destructive"
+                              : "text-xs text-foreground"
+                          }
+                          style={{ lineHeight: 18 }}
+                        >
+                          {formatOutcomeText(task().state)}
+                        </Text>
+                      </View>
+                    </If>
+                  )}
+                </If>
+              </View>
+            </Scroll>
+          </View>
+        </If>
       </View>
     </View>
   );

@@ -102,6 +102,23 @@ function makeSnapshot() {
         createdAt: "2026-11-15T04:50:00.000Z",
         updatedAt: "2026-11-15T04:55:00.000Z",
       },
+      {
+        id: "task_browser_side",
+        conversationId: "conv_code",
+        taskKind: "browser_research",
+        title: "Check docs site login",
+        runnerId: "browser-runner",
+        state: {
+          kind: "running",
+          startedAt: "2026-11-15T04:56:00.000Z",
+          stepSummary: "Waiting on login gate",
+          latestUrl: "https://example.com/login",
+          latestScreenshotBase64:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        },
+        createdAt: "2026-11-15T04:56:00.000Z",
+        updatedAt: "2026-11-15T04:56:05.000Z",
+      },
     ],
     taskTraces: {
       task_done_1: [
@@ -139,9 +156,13 @@ function makeSnapshot() {
   };
 }
 
-test("ChatGPT-style workspace, right-click own-message recall, sessions sidebar, collapsed tasks accordion, and YOLO harness settings", async () => {
+test("ChatGPT-style workspace, right-click own-message recall, session-scoped tasks, interactive browser takeover, custom avatar, and harness settings", async () => {
   const postedCommands: Array<{ kind: string; [key: string]: unknown }> = [];
+  const browserCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
   let exportedCount = 0;
+
+  const sampleShot =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
   const app = await open("./App.tsx", {
     width: 1200,
@@ -153,17 +174,42 @@ test("ChatGPT-style workspace, right-click own-message recall, sessions sidebar,
       },
     },
     network: {
-      [`GET ${BASE_URL}/api/state*`]: () => ({
-        status: 200,
-        body: JSON.stringify(makeSnapshot()),
-        headers: { "content-type": "application/json" },
-      }),
+      [`GET ${BASE_URL}/api/state*`]: (req) => {
+        const snap = makeSnapshot();
+        const urlObj = new URL(req.url);
+        const requestedConv = urlObj.searchParams.get("conversationId");
+        const resolvedConv =
+          requestedConv && snap.conversations.some((c) => c.id === requestedConv)
+            ? requestedConv
+            : snap.conversationId;
+        return {
+          status: 200,
+          body: JSON.stringify({ ...snap, conversationId: resolvedConv }),
+          headers: { "content-type": "application/json" },
+        };
+      },
       [`POST ${BASE_URL}/api/command`]: (req) => {
         const parsed = JSON.parse(req.body ?? "{}") as { kind: string; [key: string]: unknown };
         postedCommands.push(parsed);
         return {
           status: 200,
           body: JSON.stringify({ ok: true }),
+          headers: { "content-type": "application/json" },
+        };
+      },
+      [`POST ${BASE_URL}/api/browser/*`]: (req) => {
+        const body = JSON.parse(req.body ?? "{}") as Record<string, unknown>;
+        browserCalls.push({ path: req.url, body });
+        return {
+          status: 200,
+          body: JSON.stringify({
+            url: typeof body["url"] === "string" ? body["url"] : "https://example.com/logged-in",
+            title: "Example",
+            screenshotBase64: sampleShot,
+            mimeType: "image/jpeg",
+            capturedAt: "2026-11-15T05:10:00.000Z",
+            headless: req.url.endsWith("/open_window") ? Boolean(body["headless"]) : true,
+          }),
           headers: { "content-type": "application/json" },
         };
       },
@@ -228,14 +274,12 @@ test("ChatGPT-style workspace, right-click own-message recall, sessions sidebar,
   expect(app.texts()).toContain("你撤回了一条消息");
   expect(postedCommands.some((c) => c.kind === "chat.recall" && c.messageId === "msg_2")).toBe(true);
 
-  // Multi-session creation via New chat button.
-  await app.press("id:new-chat-btn");
-  await app.waitFor("id:welcome-card");
-  expect(postedCommands.some((c) => c.kind === "conversation.create")).toBe(true);
-
-  // Open Tasks sidebar via icon button, expand accordion row, and click content to open Live Task View.
+  // Open Tasks sidebar BEFORE switching conversations: verifies session-scoping.
   await app.press("id:toggle-drawer");
   await app.waitFor("id:tasks-sidebar");
+  expect(app.shows("id:task-toggle-task_done_1")).toBe(true);
+  expect(app.shows("id:task-toggle-task_browser_side")).toBe(false);
+
   expect(app.shows("id:task-details-task_done_1")).toBe(false);
   await app.press("id:task-toggle-task_done_1");
   await app.waitFor("id:task-details-task_done_1");
@@ -244,11 +288,72 @@ test("ChatGPT-style workspace, right-click own-message recall, sessions sidebar,
   await app.waitFor("id:task-detail-view");
   await app.waitFor("id:trace-item-tr_1");
   await app.press("id:task-detail-back-btn");
-  await app.waitFor("id:welcome-card");
 
-  // Click avatar to enter Settings page.
+  // Switch to second session (`conv_code`) and verify its browser task + interactive controls.
+  await app.press("id:open-sidebar-btn");
+  await app.waitFor("id:conv-item-conv_code");
+  await app.press("id:conv-item-conv_code");
+  await app.waitFor("id:task-toggle-task_browser_side");
+  expect(app.shows("id:task-toggle-task_done_1")).toBe(false);
+  await app.press("id:task-toggle-task_browser_side");
+  await app.waitFor("id:task-open-detail-task_browser_side");
+  await app.press("id:task-open-detail-task_browser_side");
+  await app.waitFor("id:task-detail-browser-shot");
+
+  // Full-browser mode, URL navigation, typing, pause for manual login, and open window.
+  await app.press("id:task-view-browser");
+  expect(app.shows("id:tasks-sidebar")).toBe(false);
+  await app.clear("id:task-browser-url-input");
+  await app.type("id:task-browser-url-input", "https://example.com/signin");
+  await app.press("id:task-browser-go-btn");
+  expect(browserCalls.some((c) => c.path.endsWith("/navigate"))).toBe(true);
+
+  await app.type("id:task-browser-type-input", "myuser");
+  await app.press("id:task-browser-enter-btn");
+  expect(
+    browserCalls.some(
+      (c) => c.path.endsWith("/interact") && c.body["mode"] === "type" && c.body["text"] === "myuser",
+    ),
+  ).toBe(true);
+
+  await app.press("id:detail-pause-task_browser_side");
+  expect(
+    postedCommands.some((c) => c.kind === "task.pause_user" && c.taskId === "task_browser_side"),
+  ).toBe(true);
+
+  await app.press("id:task-open-window-btn");
+  expect(browserCalls.some((c) => c.path.endsWith("/open_window"))).toBe(true);
+  await app.press("id:task-detail-back-btn");
+
+  // Multi-session creation via New chat button clears tasks sidebar cleanly for the empty session.
+  await app.press("id:open-sidebar-btn");
+  await app.waitFor("id:new-chat-btn");
+  await app.press("id:new-chat-btn");
+  await app.waitFor("id:welcome-card");
+  expect(postedCommands.some((c) => c.kind === "conversation.create")).toBe(true);
+  await app.press("id:toggle-drawer");
+  await app.waitFor("text:暂无后台任务");
+
+  // Click avatar to enter Settings page and test custom avatar URL + reset.
   await app.press("id:avatar-settings-btn");
   await app.waitFor("id:settings-page");
+  await app.type("id:persona-avatar-input", "https://example.com/livia-avatar.png");
+  await app.press("id:save-persona-btn");
+  expect(
+    postedCommands.some((c) => {
+      if (c.kind !== "relationship.update") return false;
+      const patch = c.patch as { companionAvatar?: string } | undefined;
+      return patch?.companionAvatar === "https://example.com/livia-avatar.png";
+    }),
+  ).toBe(true);
+  await app.press("id:reset-avatar-btn");
+  expect(
+    postedCommands.some((c) => {
+      if (c.kind !== "relationship.update") return false;
+      const patch = c.patch as { companionAvatar?: string } | undefined;
+      return patch?.companionAvatar === "";
+    }),
+  ).toBe(true);
 
   await app.press("id:settings-tab-models");
   await app.clear("id:api-base-url-input");
@@ -358,12 +463,12 @@ test("renders empty welcome card in narrow split layout and submits starter prom
   await app.waitFor("id:welcome-card");
   expect(app.shows("id:sessions-sidebar")).toBe(false);
   expect(app.shows("id:tasks-sidebar")).toBe(false);
-  expect(app.texts()).toContain("平时聊天自然简短点，不用太像客服。");
+  expect(app.texts()).toContain("今天过得怎么样？陪我随便聊聊");
 
-  await app.press("text:平时聊天自然简短点，不用太像客服。");
+  await app.press("text:今天过得怎么样？陪我随便聊聊");
   expect(
     postedCommands.some(
-      (c) => c.kind === "chat.send" && c.content === "平时聊天自然简短点，不用太像客服。",
+      (c) => c.kind === "chat.send" && c.content === "今天过得怎么样？陪我随便聊聊",
     ),
   ).toBe(true);
 });

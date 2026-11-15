@@ -24,6 +24,8 @@ import {
 } from "@live-for-llm/protocol";
 import { signal, type Signal } from "nsh";
 import {
+  type BrowserControlResult,
+  type BrowserInteractPayload,
   type DaemonTransport,
   DEFAULT_HARNESS_SETTINGS,
   DEFAULT_MODEL_SETTINGS,
@@ -56,6 +58,7 @@ export interface CompanionUiStore {
   readonly inspectedTaskId: Signal<TaskId | null>;
   readonly sidebarOpen: Signal<boolean>;
   readonly drawerOpen: Signal<boolean>;
+  readonly browserWindowOpen: Signal<boolean>;
   readonly conversationId: Signal<ConversationId>;
   readonly conversations: Signal<readonly ConversationSummary[]>;
   readonly messages: Signal<readonly ChatMessage[]>;
@@ -83,7 +86,14 @@ export interface CompanionUiStore {
   recallMessage(messageId: MessageId): Promise<boolean>;
   deleteMessages(messageIds: readonly MessageId[]): Promise<boolean>;
   decideApproval(approvalId: ApprovalId, decision: "approved" | "denied"): Promise<void>;
+  pauseBrowserTask(taskId: TaskId, instructions?: string): Promise<void>;
   resumeBrowserTask(taskId: TaskId): Promise<void>;
+  interactBrowser(req: BrowserInteractPayload): Promise<BrowserControlResult | null>;
+  openBrowserWindow(req: {
+    readonly taskId?: string;
+    readonly url?: string;
+    readonly headless?: boolean;
+  }): Promise<BrowserControlResult | null>;
   cancelTask(taskId: TaskId): Promise<void>;
   addMemory(draft: MemoryDraft): Promise<void>;
   deleteMemory(memoryId: MemoryId): Promise<void>;
@@ -116,6 +126,7 @@ export function createCompanionUiStore(options?: {
   const inspectedTaskId = signal<TaskId | null>(null);
   const sidebarOpen = signal(true);
   const drawerOpen = signal(false);
+  const browserWindowOpen = signal(false);
   const messages = signal<readonly ChatMessage[]>(EMPTY_SNAPSHOT.messages);
   const streamingReply = signal("");
   const memories = signal<readonly MemoryRecord[]>(EMPTY_SNAPSHOT.memories);
@@ -153,7 +164,15 @@ export function createCompanionUiStore(options?: {
     }
   }
 
-  function applySnapshot(snap: Awaited<ReturnType<DaemonTransport["fetchState"]>>): void {
+  let hasSyncedOnce = false;
+
+  function applySnapshot(
+    snap: Awaited<ReturnType<DaemonTransport["fetchState"]>>,
+    adoptConversation = false,
+  ): void {
+    if (adoptConversation && snap.conversationId) {
+      conversationId.set(snap.conversationId);
+    }
     const activeId = conversationId();
     const list = snap.conversations && snap.conversations.length > 0
       ? snap.conversations
@@ -319,8 +338,6 @@ export function createCompanionUiStore(options?: {
     connected.set(false);
   }
 
-  let hasSyncedOnce = false;
-
   function syncSnapshot(seq: number, retriesRemaining = 0): void {
     if (retryTimer !== undefined) {
       clearTimeout(retryTimer);
@@ -330,8 +347,9 @@ export function createCompanionUiStore(options?: {
       .fetchState(conversationId())
       .then((snap) => {
         if (seq !== connectSeq) return;
+        const isFirstSync = !hasSyncedOnce;
         hasSyncedOnce = true;
-        applySnapshot(snap);
+        applySnapshot(snap, isFirstSync);
         statusBanner.set("");
       })
       .catch((err) => {
@@ -386,6 +404,7 @@ export function createCompanionUiStore(options?: {
     inspectedTaskId,
     sidebarOpen,
     drawerOpen,
+    browserWindowOpen,
     conversationId,
     conversations,
     messages,
@@ -523,11 +542,64 @@ export function createCompanionUiStore(options?: {
         statusBanner.set("");
       });
     },
+    async pauseBrowserTask(taskId: TaskId, instructions?: string) {
+      await runAction(async () => {
+        await transport.sendCommand({
+          kind: "task.pause_user",
+          taskId,
+          ...(instructions ? { instructions } : {}),
+        });
+      });
+    },
     async resumeBrowserTask(taskId: TaskId) {
       await runAction(async () => {
         await transport.sendCommand({ kind: "browser.resume_user", taskId });
         statusBanner.set("");
       });
+    },
+    async interactBrowser(req: BrowserInteractPayload): Promise<BrowserControlResult | null> {
+      let out: BrowserControlResult | null = null;
+      await runAction(async () => {
+        const res = await transport.interactBrowser(req);
+        if (typeof res.headless === "boolean") {
+          browserWindowOpen.set(!res.headless);
+        }
+        if (req.taskId && res.screenshotBase64) {
+          const shot = res.screenshotBase64;
+          const capturedAt = res.capturedAt ?? new Date().toISOString();
+          browserFrames.update((prev) => ({
+            ...prev,
+            [req.taskId!]: { base64: shot, url: res.url, capturedAt },
+          }));
+          screenshots.update((prev) => ({ ...prev, [req.taskId!]: shot }));
+        }
+        out = res;
+      });
+      return out;
+    },
+    async openBrowserWindow(req: {
+      readonly taskId?: string;
+      readonly url?: string;
+      readonly headless?: boolean;
+    }): Promise<BrowserControlResult | null> {
+      let out: BrowserControlResult | null = null;
+      await runAction(async () => {
+        const res = await transport.openBrowserWindow(req);
+        if (typeof res.headless === "boolean") {
+          browserWindowOpen.set(!res.headless);
+        }
+        if (req.taskId && res.screenshotBase64) {
+          const shot = res.screenshotBase64;
+          const capturedAt = res.capturedAt ?? new Date().toISOString();
+          browserFrames.update((prev) => ({
+            ...prev,
+            [req.taskId!]: { base64: shot, url: res.url, capturedAt },
+          }));
+          screenshots.update((prev) => ({ ...prev, [req.taskId!]: shot }));
+        }
+        out = res;
+      });
+      return out;
     },
     async cancelTask(taskId: TaskId) {
       await runAction(async () => {
@@ -588,6 +660,22 @@ export function createCompanionUiStore(options?: {
     async updateRelationship(patch: RelationshipUpdate): Promise<boolean> {
       return runAction(async () => {
         await transport.sendCommand({ kind: "relationship.update", patch });
+        relationship.update((prev) => {
+          const next: RelationshipState = {
+            ...prev,
+            ...(patch.companionName ? { companionName: patch.companionName } : {}),
+            ...(patch.userName ? { userName: patch.userName } : {}),
+            ...(patch.currentMood ? { currentMood: patch.currentMood } : {}),
+          };
+          if (patch.companionAvatar !== undefined) {
+            if (patch.companionAvatar) {
+              return { ...next, companionAvatar: patch.companionAvatar };
+            }
+            const { companionAvatar: _removed, ...rest } = next;
+            return rest;
+          }
+          return next;
+        });
         statusBanner.set(t("statusPersonaSaved"));
       });
     },

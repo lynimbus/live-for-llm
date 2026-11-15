@@ -10,7 +10,7 @@ import {
   type MemoryKind,
   type TrustPolicyMode,
 } from "@live-for-llm/protocol";
-import { effect, Scroll, signal, Text, View } from "nsh";
+import { effect, Picker, Scroll, signal, Text, View } from "nsh";
 import { Button, Input } from "nsh/base";
 import { currentLocale, setLocale, t } from "./i18n.ts";
 import { CloseIcon } from "./icons.tsx";
@@ -21,7 +21,24 @@ import {
   createEnterMotion,
 } from "./motion.ts";
 import type { CompanionUiStore, SettingsSection } from "./state.ts";
-import { SelectablePill } from "./ui.tsx";
+import { CompanionAvatar, SelectablePill } from "./ui.tsx";
+
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i] ?? 0;
+    const b = i + 1 < bytes.length ? bytes[i + 1]! : 0;
+    const c = i + 2 < bytes.length ? bytes[i + 2]! : 0;
+    const triplet = (a << 16) | (b << 8) | c;
+    out += BASE64_ALPHABET[(triplet >> 18) & 63]!;
+    out += BASE64_ALPHABET[(triplet >> 12) & 63]!;
+    out += i + 1 < bytes.length ? BASE64_ALPHABET[(triplet >> 6) & 63]! : "=";
+    out += i + 2 < bytes.length ? BASE64_ALPHABET[triplet & 63]! : "=";
+  }
+  return out;
+}
 
 export interface SettingsPageProps {
   readonly store: CompanionUiStore;
@@ -133,6 +150,7 @@ export function SettingsPage(props: SettingsPageProps) {
   const newContent = signal("");
 
   const personaName = signal(store.relationship().companionName);
+  const companionAvatar = signal(store.relationship().companionAvatar ?? "");
   const userName = signal(store.relationship().userName);
   const personaDirty = signal(false);
 
@@ -160,6 +178,7 @@ export function SettingsPage(props: SettingsPageProps) {
     const rel = store.relationship();
     if (!personaDirty()) {
       personaName.set(rel.companionName);
+      companionAvatar.set(rel.companionAvatar ?? "");
       userName.set(rel.userName);
     }
   });
@@ -267,14 +286,47 @@ export function SettingsPage(props: SettingsPageProps) {
 
   async function savePersonaSettings() {
     const companion = personaName().trim();
+    const avatar = companionAvatar().trim();
     const user = userName().trim();
-    if (!companion && !user) {
-      return;
-    }
     const ok = await store.updateRelationship({
       ...(companion ? { companionName: companion } : {}),
       ...(user ? { userName: user } : {}),
+      companionAvatar: avatar,
     });
+    if (ok) {
+      personaDirty.set(false);
+    }
+  }
+
+  async function pickAvatarImage() {
+    try {
+      const picked = await Picker.pickImages({
+        maxDimension: 256,
+        quality: 0.85,
+        format: "compatible",
+      });
+      const first = picked[0];
+      if (!first) return;
+      const bytes = new Uint8Array(await first.file.arrayBuffer());
+      const mime = first.file.type && first.file.type.startsWith("image/") ? first.file.type : "image/jpeg";
+      const dataUri = `data:${mime};base64,${bytesToBase64(bytes)}`;
+      companionAvatar.set(dataUri);
+      personaDirty.set(true);
+      const ok = await store.updateRelationship({ companionAvatar: dataUri });
+      if (ok) {
+        personaDirty.set(false);
+      }
+    } catch (err) {
+      store.statusBanner.set(
+        t("statusOpFailed", { err: err instanceof Error ? err.message : String(err) }),
+      );
+    }
+  }
+
+  async function resetAvatarImage() {
+    companionAvatar.set("");
+    personaDirty.set(true);
+    const ok = await store.updateRelationship({ companionAvatar: "" });
     if (ok) {
       personaDirty.set(false);
     }
@@ -455,6 +507,48 @@ export function SettingsPage(props: SettingsPageProps) {
                 <Text class="text-sm font-semibold text-foreground">
                   {t("profileSectionTitle")}
                 </Text>
+
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <CompanionAvatar
+                    avatarSrc={() => companionAvatar().trim() || undefined}
+                    initial={() => (personaName().trim().slice(0, 1).toUpperCase() || "L")}
+                    size={52}
+                  />
+                  <View style={{ flex: 1, minWidth: 200, gap: 8 }}>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                      <Button
+                        testID="pick-avatar-btn"
+                        onPress={() => void pickAvatarImage()}
+                        class="px-3 py-1.5 rounded-lg bg-secondary border border-border"
+                        style={BUTTON_MOTION_STYLE}
+                        activeStyle={BUTTON_ACTIVE_STYLE}
+                      >
+                        <Text class="text-xs font-medium text-foreground">{t("avatarPickBtn")}</Text>
+                      </Button>
+                      <Button
+                        testID="reset-avatar-btn"
+                        onPress={() => void resetAvatarImage()}
+                        class="px-3 py-1.5 rounded-lg bg-background border border-border"
+                        style={BUTTON_MOTION_STYLE}
+                        activeStyle={BUTTON_ACTIVE_STYLE}
+                      >
+                        <Text class="text-xs text-muted-foreground">{t("avatarResetBtn")}</Text>
+                      </Button>
+                    </View>
+                    <Input
+                      testID="persona-avatar-input"
+                      value={companionAvatar()}
+                      placeholder={t("avatarUrlPlaceholder")}
+                      onChange={(e) => {
+                        personaDirty.set(true);
+                        companionAvatar.set(e.value);
+                      }}
+                      class="w-full px-3 py-1.5 rounded-lg border border-border bg-background text-xs text-foreground"
+                      style={{ minWidth: 0 }}
+                    />
+                  </View>
+                </View>
+
                 <View style={{ flexDirection: "row", gap: 8 }}>
                   <Input
                     testID="persona-companion-input"

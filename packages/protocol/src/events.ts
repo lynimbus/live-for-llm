@@ -135,6 +135,7 @@ export interface ModelSettingsUpdate {
 
 export interface RelationshipUpdate {
   readonly companionName?: string;
+  readonly companionAvatar?: string;
   readonly userName?: string;
   readonly currentMood?: string;
 }
@@ -175,6 +176,11 @@ export type ClientCommand =
   | {
       readonly kind: "task.cancel";
       readonly taskId: TaskId;
+    }
+  | {
+      readonly kind: "task.pause_user";
+      readonly taskId: TaskId;
+      readonly instructions?: string;
     }
   | {
       readonly kind: "browser.resume_user";
@@ -462,12 +468,17 @@ function parseRelationshipUpdate(raw: unknown): RelationshipUpdate {
     obj["companionName"],
     "RelationshipUpdate.companionName",
   );
+  const companionAvatar = expectOptionalString(
+    obj["companionAvatar"],
+    "RelationshipUpdate.companionAvatar",
+  );
   const userName = expectOptionalString(obj["userName"], "RelationshipUpdate.userName");
   const currentMood = expectOptionalString(obj["currentMood"], "RelationshipUpdate.currentMood");
   return {
     ...(companionName !== undefined && companionName.trim()
       ? { companionName: companionName.trim() }
       : {}),
+    ...(companionAvatar !== undefined ? { companionAvatar: companionAvatar.trim() } : {}),
     ...(userName !== undefined && userName.trim() ? { userName: userName.trim() } : {}),
     ...(currentMood !== undefined && currentMood.trim()
       ? { currentMood: currentMood.trim() }
@@ -488,8 +499,15 @@ function parseRelationshipState(raw: unknown): RelationshipState {
       date: expectString(entry["date"], "anniversary.date"),
     };
   });
+  const companionAvatar = expectOptionalString(
+    obj["companionAvatar"],
+    "RelationshipState.companionAvatar",
+  );
   return {
     companionName: expectNonEmptyString(obj["companionName"], "RelationshipState.companionName"),
+    ...(companionAvatar !== undefined && companionAvatar.trim()
+      ? { companionAvatar: companionAvatar.trim() }
+      : {}),
     userName: expectNonEmptyString(obj["userName"], "RelationshipState.userName"),
     affinityScore: expectNumber(obj["affinityScore"], "RelationshipState.affinityScore"),
     currentMood: expectNonEmptyString(obj["currentMood"], "RelationshipState.currentMood"),
@@ -544,6 +562,16 @@ export function parseClientCommand(raw: unknown): ClientCommand {
       };
     case "task.cancel":
       return { kind: "task.cancel", taskId: parseTaskId(obj["taskId"]) };
+    case "task.pause_user": {
+      const instructions = expectOptionalString(obj["instructions"], "task.pause_user.instructions");
+      return {
+        kind: "task.pause_user",
+        taskId: parseTaskId(obj["taskId"]),
+        ...(instructions !== undefined && instructions.trim()
+          ? { instructions: instructions.trim() }
+          : {}),
+      };
+    }
     case "browser.resume_user":
       return { kind: "browser.resume_user", taskId: parseTaskId(obj["taskId"]) };
     case "memory.upsert":

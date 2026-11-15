@@ -203,6 +203,7 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
         kind: "relationship.update",
         patch: {
           companionName: "Livia-2",
+          companionAvatar: "data:image/png;base64,iVBORw0KGgo=",
           userName: "Lynimbus",
         },
       }),
@@ -228,7 +229,18 @@ test("CompanionDaemon hot-reloads custom API baseUrl/key/models and relationship
     const relEvt = received.find((e) => e.kind === "relationship.updated");
     assert.ok(relEvt && relEvt.kind === "relationship.updated");
     assert.equal(relEvt.relationship.companionName, "Livia-2");
+    assert.equal(relEvt.relationship.companionAvatar, "data:image/png;base64,iVBORw0KGgo=");
     assert.equal(relEvt.relationship.userName, "Lynimbus");
+
+    await daemon.handleCommand({
+      kind: "relationship.update",
+      patch: { companionAvatar: "" },
+    });
+    assert.equal(daemon.store.getRelationshipState().companionAvatar, undefined);
+    await daemon.handleCommand({
+      kind: "relationship.update",
+      patch: { companionAvatar: "https://example.com/avatar.png" },
+    });
 
     assert.equal(existsSync(configPath), true);
     const saved = JSON.parse(readFileSync(configPath, "utf8")) as {

@@ -31,6 +31,7 @@ import {
 } from "./src/state.ts";
 import { TaskDetailView } from "./src/TaskDetailView.tsx";
 import { TasksSidebar } from "./src/TasksSidebar.tsx";
+import { CompanionAvatar } from "./src/ui.tsx";
 
 export interface AppProps {
   readonly store?: CompanionUiStore;
@@ -39,15 +40,15 @@ export interface AppProps {
 function getStarterPrompts(): readonly string[] {
   if (currentLocale() === "en-US") {
     return [
-      "What background tasks or local checks can you run right now?",
-      "Help me look something up in the browser and summarize it.",
-      "Keep replies casual and concise unless we are reviewing code.",
+      "Hey, how's your day going?",
+      "Help me figure out what to eat tonight.",
+      "Anything fun or interesting going on online today?",
     ];
   }
   return [
-    "先帮我看看你现在都能做哪些后台或本地操作？",
-    "帮我查点资料，用自己的话说重点就行。",
-    "平时聊天自然简短点，不用太像客服。",
+    "今天过得怎么样？陪我随便聊聊",
+    "晚上不知道吃啥，帮我想几个点子",
+    "最近有什么有意思的新鲜事？",
   ];
 }
 
@@ -121,6 +122,7 @@ function MarkdownContent(props: {
 function ChatBubble(props: {
   readonly message: () => ChatMessage;
   readonly companionName: () => string;
+  readonly companionAvatar: () => string | undefined;
   readonly companionInitial: () => string;
   readonly selectionMode: () => boolean;
   readonly selected: () => boolean;
@@ -224,21 +226,14 @@ function ChatBubble(props: {
               gap: 12,
             }}
           >
-            <View
-              class="bg-card border border-border"
-              style={{
-                width: 26,
-                height: 26,
-                borderRadius: 13,
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                marginTop: 2,
-              }}
-            >
-              <Text class="text-[11px] font-bold text-foreground">
-                {props.companionInitial()}
-              </Text>
+            <View style={{ marginTop: 2 }}>
+              <CompanionAvatar
+                avatarSrc={props.companionAvatar}
+                initial={props.companionInitial}
+                size={26}
+                class="bg-card border border-border"
+                textClass="text-[11px] font-bold text-foreground"
+              />
             </View>
             <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
               <If when={msg().proactive || msg().role === "system"}>
@@ -450,14 +445,16 @@ export function App(props: AppProps = {}) {
     await copyText(store, joined);
   }
 
+  const sessionTasks = () =>
+    store.tasks().filter((task) => task.conversationId === store.conversationId());
+
   const isCompanionBusy = () =>
     Boolean(store.streamingReply()) ||
     inFlightSends() > 0 ||
-    store.tasks().some((task) => task.state.kind === "running");
+    sessionTasks().some((task) => task.state.kind === "running");
 
   const activeTaskCount = () =>
-    store
-      .tasks()
+    sessionTasks()
       .filter(
         (task) =>
           task.state.kind === "queued" ||
@@ -566,20 +563,12 @@ export function App(props: AppProps = {}) {
                     hoverStyle={{ opacity: 0.88 }}
                     activeStyle={BUTTON_ACTIVE_STYLE}
                   >
-                    <View
-                      class="bg-primary"
-                      style={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: 14,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        position: "relative",
-                      }}
-                    >
-                      <Text class="text-xs font-bold text-primary-foreground">
-                        {companionInitial()}
-                      </Text>
+                    <View style={{ width: 28, height: 28, position: "relative" }}>
+                      <CompanionAvatar
+                        avatarSrc={() => store.relationship().companionAvatar}
+                        initial={companionInitial}
+                        size={28}
+                      />
                       <View
                         class={
                           isCompanionBusy()
@@ -699,7 +688,7 @@ export function App(props: AppProps = {}) {
                 )}
               </If>
 
-              <If when={findAttentionTask(store.tasks())}>
+              <If when={findAttentionTask(sessionTasks())}>
                 {(task) => (
                   <View
                     testID="attention-banner"
@@ -808,20 +797,13 @@ export function App(props: AppProps = {}) {
                           minWidth: 0,
                         }}
                       >
-                        <View
+                        <CompanionAvatar
+                          avatarSrc={() => store.relationship().companionAvatar}
+                          initial={companionInitial}
+                          size={44}
                           class="bg-secondary border border-border"
-                          style={{
-                            width: 44,
-                            height: 44,
-                            borderRadius: 22,
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <Text class="text-base font-bold text-foreground">
-                            {companionInitial()}
-                          </Text>
-                        </View>
+                          textClass="text-base font-bold text-foreground"
+                        />
                         <Text
                           class="text-lg font-semibold text-foreground"
                           style={{ textAlign: "center" }}
@@ -879,6 +861,7 @@ export function App(props: AppProps = {}) {
                         <ChatBubble
                           message={msg}
                           companionName={() => store.relationship().companionName}
+                          companionAvatar={() => store.relationship().companionAvatar}
                           companionInitial={companionInitial}
                           selectionMode={() => selectionMode()}
                           selected={() => selectedIds().has(msg().id)}
@@ -903,21 +886,14 @@ export function App(props: AppProps = {}) {
                           width: "100%",
                         }}
                       >
-                        <View
-                          class="bg-card border border-border"
-                          style={{
-                            width: 26,
-                            height: 26,
-                            borderRadius: 13,
-                            alignItems: "center",
-                            justifyContent: "center",
-                            flexShrink: 0,
-                            marginTop: 2,
-                          }}
-                        >
-                          <Text class="text-[11px] font-bold text-foreground">
-                            {companionInitial()}
-                          </Text>
+                        <View style={{ marginTop: 2 }}>
+                          <CompanionAvatar
+                            avatarSrc={() => store.relationship().companionAvatar}
+                            initial={companionInitial}
+                            size={26}
+                            class="bg-card border border-border"
+                            textClass="text-[11px] font-bold text-foreground"
+                          />
                         </View>
                         <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
                           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>

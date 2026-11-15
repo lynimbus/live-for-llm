@@ -93,12 +93,14 @@ export class PersistentBrowserManager {
     readonly profileId: BrowserProfileId;
     readonly headless?: boolean;
   }): Promise<Page> {
-    const desiredHeadless = params.headless ?? this.defaultHeadless;
     const existing = this.sessions.get(params.profileId);
+    const desiredHeadless = params.headless ?? (existing ? existing.headless : this.defaultHeadless);
+    let preserveUrl: string | undefined;
     if (existing) {
       if (existing.headless === desiredHeadless) {
         return existing.page;
       }
+      preserveUrl = existing.page.url();
       await existing.context.close();
       this.sessions.delete(params.profileId);
     }
@@ -111,8 +113,49 @@ export class PersistentBrowserManager {
     });
 
     const page = context.pages()[0] ?? (await context.newPage());
+    if (preserveUrl && preserveUrl !== "about:blank") {
+      await page.goto(preserveUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+    }
     this.sessions.set(params.profileId, { context, page, headless: desiredHeadless });
     return page;
+  }
+
+  getSessionMode(profileId: BrowserProfileId): { readonly open: boolean; readonly headless: boolean } {
+    const existing = this.sessions.get(profileId);
+    if (!existing) {
+      return { open: false, headless: this.defaultHeadless };
+    }
+    return { open: true, headless: existing.headless };
+  }
+
+  async clickAt(params: {
+    readonly profileId: BrowserProfileId;
+    readonly x: number;
+    readonly y: number;
+  }): Promise<BrowserSnapshot> {
+    const page = await this.openSession({ profileId: params.profileId });
+    const clampedX = Math.max(0, Math.min(1279, Math.round(params.x)));
+    const clampedY = Math.max(0, Math.min(799, Math.round(params.y)));
+    await page.mouse.click(clampedX, clampedY);
+    await page.waitForLoadState("domcontentloaded", { timeout: 2500 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 120));
+    return this.captureSnapshot({ profileId: params.profileId });
+  }
+
+  async typeText(params: {
+    readonly profileId: BrowserProfileId;
+    readonly text: string;
+    readonly pressEnter?: boolean;
+  }): Promise<BrowserSnapshot> {
+    const page = await this.openSession({ profileId: params.profileId });
+    if (params.text.length > 0) {
+      await page.keyboard.type(params.text, { delay: 12 });
+    }
+    if (params.pressEnter) {
+      await page.keyboard.press("Enter");
+      await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+    }
+    return this.captureSnapshot({ profileId: params.profileId });
   }
 
   async captureSnapshot(params: {

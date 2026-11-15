@@ -32,10 +32,32 @@ export interface DaemonStateSnapshot {
   readonly harnessSettings?: HarnessSettings;
 }
 
+export interface BrowserControlResult {
+  readonly url: string;
+  readonly title: string;
+  readonly screenshotBase64?: string;
+  readonly mimeType?: string;
+  readonly capturedAt?: string;
+  readonly headless?: boolean;
+}
+
+export type BrowserInteractPayload =
+  | { readonly taskId?: string; readonly mode: "click_at"; readonly x: number; readonly y: number }
+  | { readonly taskId?: string; readonly mode: "type"; readonly text: string; readonly pressEnter?: boolean }
+  | { readonly taskId?: string; readonly mode: "back" | "reload" }
+  | { readonly taskId?: string; readonly mode: "scroll"; readonly direction: "up" | "down" }
+  | { readonly taskId?: string; readonly mode: "navigate"; readonly url: string };
+
 export interface DaemonTransport {
   fetchState(conversationId: ConversationId): Promise<DaemonStateSnapshot>;
   sendCommand(command: ClientCommand): Promise<void>;
   fetchModels(req: ModelFetchRequest): Promise<ModelFetchResult>;
+  interactBrowser(req: BrowserInteractPayload): Promise<BrowserControlResult>;
+  openBrowserWindow(req: {
+    readonly taskId?: string;
+    readonly url?: string;
+    readonly headless?: boolean;
+  }): Promise<BrowserControlResult>;
   exportMemories(): Promise<{ readonly files: readonly string[] }>;
   importMemories(): Promise<{ readonly imported: number }>;
   connectEvents(onEvent: (event: DaemonEvent) => void, onStatus: (connected: boolean) => void): () => void;
@@ -60,6 +82,26 @@ export function createDaemonTransport(params: {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...(params.authToken ? { authorization: `Bearer ${params.authToken}` } : {}),
+  };
+
+  const postBrowser = async (path: string, body: Record<string, unknown>): Promise<BrowserControlResult> => {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let message = text;
+      try {
+        const parsed = JSON.parse(text) as { error?: string };
+        if (parsed.error) message = parsed.error;
+      } catch {
+        // Keep raw text fallback.
+      }
+      throw new Error(message || `Browser action failed (${res.status})`);
+    }
+    return (await res.json()) as BrowserControlResult;
   };
 
   return {
@@ -104,6 +146,30 @@ export function createDaemonTransport(params: {
         throw new Error(message || `Fetch models failed (${res.status})`);
       }
       return (await res.json()) as ModelFetchResult;
+    },
+
+    async interactBrowser(req: BrowserInteractPayload): Promise<BrowserControlResult> {
+      if (req.mode === "navigate") {
+        return postBrowser("/api/browser/navigate", {
+          url: req.url,
+          ...(req.taskId ? { taskId: req.taskId } : {}),
+        });
+      }
+      if (req.mode === "scroll") {
+        return postBrowser("/api/browser/scroll", {
+          direction: req.direction,
+          ...(req.taskId ? { taskId: req.taskId } : {}),
+        });
+      }
+      return postBrowser("/api/browser/interact", req);
+    },
+
+    async openBrowserWindow(req: {
+      readonly taskId?: string;
+      readonly url?: string;
+      readonly headless?: boolean;
+    }): Promise<BrowserControlResult> {
+      return postBrowser("/api/browser/open_window", req);
     },
 
     async exportMemories(): Promise<{ readonly files: readonly string[] }> {

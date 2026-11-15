@@ -11,6 +11,7 @@ import {
   createEnterMotion,
 } from "./motion.ts";
 import type { CompanionUiStore } from "./state.ts";
+import { CompanionAvatar } from "./ui.tsx";
 
 export interface SessionsSidebarProps {
   readonly store: CompanionUiStore;
@@ -209,19 +210,12 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
         hoverStyle={{ opacity: 0.92 }}
         activeStyle={BUTTON_ACTIVE_STYLE}
       >
-        <View
-          class="bg-primary"
-          style={{
-            width: 30,
-            height: 30,
-            borderRadius: 15,
-            alignItems: "center",
-            justifyContent: "center",
-            position: "relative",
-            flexShrink: 0,
-          }}
-        >
-          <Text class="text-xs font-bold text-primary-foreground">{companionInitial()}</Text>
+        <View style={{ width: 30, height: 30, position: "relative", flexShrink: 0 }}>
+          <CompanionAvatar
+            avatarSrc={() => store.relationship().companionAvatar}
+            initial={companionInitial}
+            size={30}
+          />
           <View
             class={
               props.isBusy()
